@@ -3,6 +3,7 @@
   // apps/mash is a Vite app that typechecks standalone via `tsc --noEmit`.
   "files": [],
   "references": [
+    { "path": "packages/types" },
     { "path": "packages/core" },
     { "path": "packages/acs" },
     { "path": "packages/voice-truvoice" },
