@@ -32,3 +32,10 @@ coverage/
 
 # --- Personal local config (not for a public repo) ---
 .claude/settings.local.json
+
+# --- Cycle 1 oracle (GPL DoubleAgent source + the VM dumper package + its output) ---
+# Never commit: GPL code, the dumper glue that links it, or extracted MS assets.
+oracle/
+tools/oracle/
+# Decoded images / composited frames emitted by our spike-dump (extracted MS assets)
+packages/acs/scripts/out/

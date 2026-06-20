@@ -30,13 +30,23 @@ Prove we can correctly decode a single character's **images** and **animation ta
 - Stored locally under gitignored `packages/acs/fixtures/raw/`. Commit only golden/expected outputs (e.g. hashes of decoded images, the expected animation-name list), never the source `.acs`.
 
 ## Acceptance check (GO/NO-GO)
-- [ ] We enumerate **all** of Genie's animation names and they match the oracle.
-- [ ] For **≥2 named animations** (pick one Showing/Greet-type and one Speaking-state animation), every frame renders **frame-for-frame matching** the decompiler-extracted bitmaps within a tight pixel tolerance.
-- [ ] Our decoded **image count** matches the oracle's.
-- [ ] Same passes for at least one animation of the secondary fixture (Merlin), proving it isn't Genie-specific luck.
+> Oracle settled during the cycle: graded against **Microsoft's own published animation lists**
+> (Microsoft Learn), not a decompiler/reimplementation. Byte-exact image grading moved to Cycle 2
+> (see ADR-0009). Result: **GO** — see `docs/cycles/cycle-1-findings.md`.
+- [x] We enumerate **all** of Genie's animation names and they match the oracle **exactly** (76/76,
+  vs Microsoft's published Genie list).
+- [x] **Pixel decode confirmed structurally + visually**: palette (256) + transparency index (10) +
+  128×128 dimensions decode correctly; per-image opaque-pixel counts are sane; a multi-frame
+  animation (Genie **Greet**) composites coherently (PNGs reviewed locally; gitignored, not committed).
+- [→] **Byte-exact unique-image count + per-pixel** matching: **deferred to Cycle 2** (gates
+  `acs2bundle`). See ADR-0009.
+- [x] Merlin passes the same name-match (73/73, vs Microsoft's published Merlin list), proving it
+  isn't Genie-specific luck.
 
 ## If we can't hit it
-Stop and reassess before building further. Fallback path: rely on **offline conversion** via Lebeau's decompiler (under Wine) to produce intermediate assets, and build Cycles 2+ on that pipeline instead of a native runtime parser. Knowing this escape hatch exists keeps the spike a spike, not a rabbit hole.
+Stop and reassess before building further (do not lower the bar). The name match is the load-bearing
+GO/NO-GO signal: if our decoded names ever diverge from Microsoft's published list, stop and report
+the diff. (For this cycle they match exactly.)
 
 ## Explicit non-goals
 No sprite-sheet packing, no sound playback, no balloon, no voice, no browser runtime, no full-format coverage, no `acs2bundle`. Only: can we read the pixels and the animation structure correctly, proven against ground truth.

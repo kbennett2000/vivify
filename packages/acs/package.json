@@ -20,10 +20,16 @@
   "scripts": {
     "typecheck": "tsc --build --pretty && tsc -p tsconfig.test.json",
     "test": "vitest run --passWithNoTests",
+    "spike": "tsx scripts/spike-dump.ts",
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
     "@vivify/types": "workspace:*",
     "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/pngjs": "^6.0.5",
+    "pngjs": "^7.0.0",
+    "tsx": "^4.19.2"
   }
 }

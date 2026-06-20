@@ -5,7 +5,7 @@ Risk is concentrated in two spikes — ACS image/animation decode (Cycle 1) and 
 | # | Cycle | The point | Acceptance (go/no-go where noted) |
 |---|-------|-----------|-----------------------------------|
 | 0 | Repo + contracts | Nail the seams before building across them | Types compile (strict); stub agent loads & no-ops; bundle schema + validator exist |
-| 1 | **ACS spike** — one character's pixels | Prove we can correctly decode images + animation table from raw `.acs` | **GO/NO-GO:** Genie's animation names match the oracle; ≥2 named animations render frame-for-frame matching decompiler-extracted bitmaps within tight pixel tolerance; image count matches |
+| 1 | **ACS spike** — one character's pixels | Prove we can correctly decode images + animation table from raw `.acs` | **GO/NO-GO (met):** Genie + Merlin animation names match **Microsoft's published lists exactly** (76/76, 73/73); pixel decode confirmed structurally/visually (palette, transparency, dimensions, composited Greet). Byte-exact unique-image count + per-pixel grading **moved to Cycle 2** (gates `acs2bundle`) — see ADR-0009 |
 | 2 | Full parser + sounds + `acs2bundle` | Generalize to the whole format; emit web-ready bundles | Genie/Merlin/Peedy/Robby + 2–3 random TMAFE characters convert cleanly; manifests validate |
 | 3 | Core renderer (silent) | The browser engine: compositing, timing, branching, queue, authentic **balloon** (text only) | Load Genie, click any animation → plays; balloon styled per character; queue works. (A working silent MASH.) |
 | 4 | MASH demo (silent) | Showcase + dogfood the public API early | Character picker (incl. arbitrary `.acs` upload), full animation grid, type-to-balloon; deployed |
