@@ -21,3 +21,9 @@ export type { ParsedCharacter } from './parse.js';
 export { BinaryReader } from './binary-reader.js';
 export { decodeImageData } from './rle.js';
 export { indicesToImageModel, rowStride, indexedByteSize } from './image.js';
+
+// Bundle build (pure; the Node CLI `acs2bundle` in cli.ts wraps these with fs + pngjs).
+export { packSheet, cropCell } from './sheet.js';
+export type { PackedSheet, AtlasEntry, PackOptions } from './sheet.js';
+export { buildManifest } from './bundle-build.js';
+export type { SoundRef } from './bundle-build.js';

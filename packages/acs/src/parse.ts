@@ -1,40 +1,40 @@
-// .acs parser (Cycle 1 spike scope): header -> palette -> image list ->
-// animation table. TTS/balloon/icon/states/names/sounds and per-frame mouth
-// overlays are parsed only enough to skip them (Cycle 2). All layout per
-// docs/cycles/cycle-1-findings.md.
+// .acs parser — full format (Cycle 2). Populates the complete CharacterModel IR
+// (@vivify/types): header/palette/images/animations (Cycle 1) plus voice (TTS),
+// balloon, state→animation map, character name, embedded sounds, and per-frame
+// mouth overlays. Pure / browser-safe (no Node APIs). Layout per
+// docs/cycles/cycle-2-converter.md (and cycle-1-findings.md).
 
 import type {
   AnimationModel,
+  BalloonConfig,
   CharacterInfo,
+  CharacterModel,
   FrameBranch,
   FrameImage,
   FrameModel,
   ImageModel,
   Rgb,
+  SoundModel,
+  VoiceConfig,
 } from '@vivify/types';
 import { BinaryReader } from './binary-reader.js';
 import { decodeImageData } from './rle.js';
 import { indexedByteSize, indicesToImageModel } from './image.js';
 
-/** What the Cycle 1 spike decodes: the fidelity-bearing image + animation data. */
-export interface ParsedCharacter {
-  info: CharacterInfo;
-  palette: Rgb[];
-  transparentIndex: number;
-  images: ImageModel[];
-  animations: AnimationModel[];
-}
+/** Alias for the full IR the parser now produces. */
+export type ParsedCharacter = CharacterModel;
 
 const ACS_SIGNATURE = 0xabcdabc3;
 const STYLE_TTS = 0x00000020;
 const STYLE_BALLOON = 0x00000200;
+const GUID_NULL = '{00000000-0000-0000-0000-000000000000}';
 
 interface Locator {
   offset: number;
   size: number;
 }
 
-export function parseAcs(input: ArrayBuffer | Uint8Array): ParsedCharacter {
+export function parseAcs(input: ArrayBuffer | Uint8Array): CharacterModel {
   const r = new BinaryReader(input);
 
   const sig = r.u32();
@@ -50,12 +50,13 @@ export function parseAcs(input: ArrayBuffer | Uint8Array): ParsedCharacter {
   const headerLoc = locators[0]!;
   const animIndexLoc = locators[1]!;
   const imageIndexLoc = locators[2]!;
+  const soundIndexLoc = locators[3]!;
 
-  // ---- header / character info (we need palette + color-key) ----
+  // ---- header / character block ----
   r.seek(headerLoc.offset);
   r.u16(); // versionMinor
   r.u16(); // versionMajor
-  r.u32(); // namesOffset
+  const namesOffset = r.u32(); // absolute file offset of the names block
   r.u32(); // namesSize
   const guid = r.guid();
   const width = r.u16();
@@ -63,56 +64,104 @@ export function parseAcs(input: ArrayBuffer | Uint8Array): ParsedCharacter {
   const transparentIndex = r.u8();
   const style = r.u32();
   r.u32(); // unknown (== 0x00000002)
-  if (style & STYLE_TTS) skipTts(r);
-  if (style & STYLE_BALLOON) skipBalloon(r);
+
+  const voice: VoiceConfig = style & STYLE_TTS ? readVoice(r) : {};
+  const balloon: BalloonConfig = style & STYLE_BALLOON ? readBalloon(r) : defaultBalloon();
   const palette = readPalette(r);
+  skipIcon(r);
+  const states = readStates(r);
+  const name = readCharacterName(r, namesOffset);
 
   const info: CharacterInfo = { guid, width, height };
+  if (name) info.name = name;
+
   const images = readImages(r, imageIndexLoc, palette, transparentIndex);
   const animations = readAnimations(r, animIndexLoc);
+  const sounds = readSounds(r, soundIndexLoc);
 
-  return { info, palette, transparentIndex, images, animations };
+  return { info, palette, transparentIndex, images, animations, sounds, balloon, voice, states };
 }
 
-// --- header sub-blocks we only skip in Cycle 1 ---
+// --- header sub-blocks ---
 
-function skipTts(r: BinaryReader): void {
-  r.skip(16); // engine GUID
-  r.skip(16); // mode GUID
-  r.i32(); // speed
-  r.i16(); // pitch
-  const hasLang = r.u8();
-  if (hasLang) {
-    r.u16(); // language id
-    r.string(); // (unknown string)
-    r.u16(); // gender
-    r.u16(); // age
-    r.string(); // style
-  }
+/** A COLORREF stored as B,G,R,reserved (4 bytes) → Rgb. */
+function readColorRef(r: BinaryReader): Rgb {
+  const b = r.u8();
+  const g = r.u8();
+  const red = r.u8();
+  r.u8(); // reserved
+  return [red, g, b];
 }
 
-function skipBalloon(r: BinaryReader): void {
-  r.u8(); // lines
-  r.u8(); // chars per line
-  r.skip(12); // fg, bg, border (3 x COLORREF)
-  r.string(); // font name
-  r.i32(); // font height
+function readBalloon(r: BinaryReader): BalloonConfig {
+  const numLines = r.u8();
+  const charsPerLine = r.u8();
+  const fg = readColorRef(r);
+  const bg = readColorRef(r);
+  const border = readColorRef(r);
+  const fontName = r.string();
+  const fontHeight = Math.abs(r.i32());
   r.u16(); // weight
   r.u16(); // strikeout
   r.u16(); // italic
+  return { numLines, charsPerLine, fontName, fontHeight, fg, bg, border };
+}
+
+function defaultBalloon(): BalloonConfig {
+  return {
+    numLines: 0,
+    charsPerLine: 0,
+    fontName: '',
+    fontHeight: 0,
+    fg: [0, 0, 0],
+    bg: [255, 255, 255],
+    border: [0, 0, 0],
+  };
 }
 
 function readPalette(r: BinaryReader): Rgb[] {
   const count = r.u32();
   const palette: Rgb[] = [];
-  for (let i = 0; i < count; i++) {
-    const b = r.u8();
-    const g = r.u8();
-    const red = r.u8();
-    r.u8(); // reserved
-    palette.push([red, g, b]);
-  }
+  for (let i = 0; i < count; i++) palette.push(readColorRef(r));
   return palette;
+}
+
+function skipIcon(r: BinaryReader): void {
+  const hasIcon = r.u8();
+  if (hasIcon) {
+    const maskSize = r.u32();
+    r.skip(maskSize);
+    const colorSize = r.u32();
+    r.skip(colorSize);
+  }
+}
+
+function readStates(r: BinaryReader): Record<string, string[]> {
+  const states: Record<string, string[]> = {};
+  const stateCount = r.u16();
+  for (let i = 0; i < stateCount; i++) {
+    const name = r.string();
+    const gestureCount = r.u16();
+    const gestures: string[] = [];
+    for (let g = 0; g < gestureCount; g++) gestures.push(r.string());
+    states[name] = gestures;
+  }
+  return states;
+}
+
+function readCharacterName(r: BinaryReader, namesOffset: number): string | undefined {
+  if (!namesOffset) return undefined;
+  r.seek(namesOffset);
+  const nameCount = r.u16();
+  let chosen: string | undefined;
+  for (let i = 0; i < nameCount; i++) {
+    r.u16(); // language id
+    const name = r.string();
+    r.string(); // desc1
+    r.string(); // desc2
+    if (name && chosen === undefined) chosen = name;
+  }
+  return chosen;
 }
 
 // --- images ---
@@ -225,11 +274,28 @@ function readFrame(r: BinaryReader): FrameModel {
   const branches: FrameBranch[] = [];
   for (let b = 0; b < branchCount; b++) {
     const packed = r.u32();
-    branches.push({ frameIndex: packed & 0xffff, probability: (packed >>> 16) & 0xffff });
+    // High 16 bits are a 0–100 percentage per the format; clamp to stay graceful
+    // on malformed data and within the bundle schema's 0–100 bound.
+    const probability = Math.min(100, (packed >>> 16) & 0xffff);
+    branches.push({ frameIndex: packed & 0xffff, probability });
   }
 
+  // Mouth overlays (lip-sync): captured losslessly into mouth.raw; structured
+  // modeling is Cycle 6 (ADR-0010).
   const overlayCount = r.u8();
-  for (let o = 0; o < overlayCount; o++) r.skip(14); // mouth overlays (Cycle 1: skip)
+  const overlays: Array<Record<string, unknown>> = [];
+  for (let o = 0; o < overlayCount; o++) {
+    const type = r.u8();
+    const replaceFlag = r.u8() !== 0;
+    const imageIndex = r.u16();
+    r.u8(); // unknown
+    const rgnFlag = r.u8();
+    const x = r.i16();
+    const y = r.i16();
+    const sx = r.i16();
+    const sy = r.i16();
+    overlays.push({ type, replaceFlag, imageIndex, x, y, rgnFlag, s: [sx, sy] });
+  }
 
   const frame: FrameModel = {
     images,
@@ -238,5 +304,50 @@ function readFrame(r: BinaryReader): FrameModel {
   };
   if (exitFrame >= 0) frame.exitFrame = exitFrame;
   if (soundNdx >= 0) frame.soundIndex = soundNdx;
+  if (overlays.length > 0) frame.mouth = { raw: { overlays } };
   return frame;
+}
+
+// --- sounds ---
+
+function readSounds(r: BinaryReader, loc: Locator): SoundModel[] {
+  if (!loc.size) return [];
+  r.seek(loc.offset);
+  const count = r.u32();
+  const refs: { offset: number; size: number }[] = [];
+  for (let i = 0; i < count; i++) {
+    const offset = r.u32();
+    const size = r.u32();
+    r.u32(); // checksum
+    refs.push({ offset, size });
+  }
+  return refs.map((ref) => {
+    r.seek(ref.offset);
+    const bytes = r.take(ref.size).slice(); // copy out of the file buffer
+    return { wav: bytes.buffer };
+  });
+}
+
+// TTS / voice. Mode GUID -> engineModeId; gender preserved as raw.genderCode
+// (the SAPI gender enum mapping is confirmed in the voice cycle); engine GUID and
+// other unmodeled fields kept under raw.
+function readVoice(r: BinaryReader): VoiceConfig {
+  const engineGuid = r.guid();
+  const modeGuid = r.guid();
+  const speed = r.i32();
+  const pitch = r.i16();
+
+  const raw: Record<string, unknown> = { engineGuid };
+  const voice: VoiceConfig = { speed, pitch, raw };
+  if (modeGuid !== GUID_NULL) voice.engineModeId = modeGuid;
+
+  const hasLang = r.u8();
+  if (hasLang) {
+    voice.languageId = r.u16();
+    raw.langString = r.string();
+    raw.genderCode = r.u16();
+    raw.age = r.u16();
+    raw.styleString = r.string();
+  }
+  return voice;
 }
