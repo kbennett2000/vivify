@@ -158,16 +158,27 @@ not the code) and confirmed against a `Genie.acs` hexdump. The Cycle 1 spike is 
 > implementation (the control exposes no pixel/frame data; the decompiler refuses MS characters).
 > DoubleAgent's source remains the basis of the byte-layout derivation above — that part stands.
 
-## Deferred to Cycle 2 (see ADR-0009)
-Byte-exact unique-image **count** and **per-pixel** grading of decoded images are deferred to
-Cycle 2, where they gate the `acs2bundle` converter. The spike answers "did we decode the format"
-(proven via the exact MS name match + structural/visual decode); byte-exact grading gates "ship the
-converter." Items to settle then, now that there's no per-pixel oracle in Cycle 1:
-- Row orientation (we assume bottom-up DIB and flip to top-down) — confirm per-pixel.
-- Whether any image uses `compressed == 0` (raw) in these characters.
-- The image "part 2" trailing region (region/mask) — harmless to the per-image parse (we seek by
-  `IMGREF.offset`), but model it when byte-exactness is required.
-- **Input hardening**: `parseAcs` currently trusts the on-disk image/animation/palette counts and
-  loops on them directly. Before the browser path ingests untrusted `.acs` uploads (Cycle 2+),
-  bound each count against the remaining file length so a malformed/hostile file degrades instead
-  of over-allocating.
+## Deferred to Cycle 2 (see ADR-0009) — now resolved/advanced
+Byte-exact unique-image **count** and **per-pixel** grading of decoded images were deferred to
+Cycle 2, where they gate the `acs2bundle` converter. The spike answered "did we decode the format"
+(proven via the exact MS name match + structural/visual decode); byte-exact grading gated "ship the
+converter." Status of the items listed here after Cycle 2 (see `cycle-2-converter.md`):
+
+- **Byte-exact count + per-pixel grading — MET in Cycle 2.** The converter's lossless sprite-sheet
+  round-trip (decode → pack → crop each atlas cell → pixel-for-pixel equal to the decoded image)
+  ran clean across **Genie, Merlin, Peedy, Robby — 0 mismatches over 2,775 images**, and
+  `atlas.length === images.length` holds the exact unique-image count.
+- **Row orientation** (we assumed bottom-up DIB and flip to top-down) — **confirmed correct** by the
+  per-pixel round-trip across all four characters.
+- **`compressed == 0` (raw) image handling** — **implemented and exercised** (uncompressed image
+  blocks decode directly; covered by the synthetic CI fixtures).
+- **Mouth overlays** (the per-frame OVERLAY records) — **now captured** losslessly into
+  `FrameModel.mouth.raw` (see ADR-0010); structured lip-sync modeling remains Cycle 6.
+- The image "part 2" trailing region (region/mask) — not needed for byte-exactness (we seek by
+  `IMGREF.offset` and the pixel round-trip passes); still uninterpreted, model it if a later use
+  requires it.
+
+**Still open (later cycle):**
+- **Input hardening**: `parseAcs` still trusts the on-disk image/animation/palette counts and loops
+  on them directly. Before the browser path ingests untrusted `.acs` uploads, bound each count
+  against the remaining file length so a malformed/hostile file degrades instead of over-allocating.
