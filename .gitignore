@@ -1,0 +1,34 @@
+# --- Third-party IP: NEVER commit ---
+# Microsoft Agent character files
+*.acs
+*.acf
+*.aca
+*.acd
+# Speech engine installers / binaries
+spchapi.exe
+tv_enua*.exe
+*.sapi
+# Belt-and-suspenders: never commit any Windows binary or the vendor dir
+*.exe
+services/voice-server/vendor/
+# Wine prefix used by the voice server
+services/voice-server/.wine/
+services/voice-server/prefix/
+# Extracted Microsoft assets (bitmaps/sounds pulled out of .acs during dev)
+**/fixtures/**/*.bmp
+**/fixtures/**/*.wav
+**/fixtures/raw/
+
+# --- Standard ---
+node_modules/
+dist/
+build/
+coverage/
+.turbo/
+*.tsbuildinfo
+.DS_Store
+.env
+.env.local
+
+# --- Personal local config (not for a public repo) ---
+.claude/settings.local.json

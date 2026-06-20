@@ -1,0 +1,11 @@
+{
+  // Solution file for IDE/`tsc --build`. Composite library/service projects only.
+  // apps/mash is a Vite app that typechecks standalone via `tsc --noEmit`.
+  "files": [],
+  "references": [
+    { "path": "packages/core" },
+    { "path": "packages/acs" },
+    { "path": "packages/voice-truvoice" },
+    { "path": "services/voice-server" }
+  ]
+}

@@ -1,0 +1,9 @@
+**/dist/**
+**/node_modules/**
+**/*.tsbuildinfo
+pnpm-lock.yaml
+**/fixtures/**
+services/voice-server/vendor/**
+services/voice-server/prefix/**
+# Markdown (docs/ADRs/CLAUDE.md) is authored by hand; don't enforce Prettier on prose.
+**/*.md
