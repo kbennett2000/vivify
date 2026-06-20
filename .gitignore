@@ -39,3 +39,5 @@ oracle/
 tools/oracle/
 # Decoded images / composited frames emitted by our spike-dump (extracted MS assets)
 packages/acs/scripts/out/
+# Cycle 3 local visual-confirmation harness (not the committed app — that's Cycle 4 MASH)
+packages/core/dev/
