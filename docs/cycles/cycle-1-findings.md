@@ -116,8 +116,9 @@ This enumerates every animation by name; `animOffset` points to its block.
 A **bit-stream LZ77** over the 8-bit index bytes (DoubleAgent `DecodeData`).
 Reproduced algorithmically (our own implementation in `src/rle.ts`):
 
-- Preconditions: first byte is `0x00`; the stream ends with ≥6 trailing `0xFF`
-  bytes. Skip the first **5** bytes; bit position starts at 0.
+- Preconditions (exactly as DoubleAgent's `DecodeData`): first byte is `0x00`; the stream ends
+  with **≥5** trailing `0xFF` bytes (its guard is `lBitCount < 6`, counting the FF run + 1).
+  Skip the first **5** bytes; bit position starts at 0.
 - The bit reader reads a little-endian `u32` window from `src[ptr-4 .. ptr-1]`
   and shifts by the current bit position. After consuming *n* bits:
   `ptr += (bitpos + n) >> 3; bitpos = (bitpos + n) & 7`.
@@ -132,23 +133,41 @@ Reproduced algorithmically (our own implementation in `src/rle.ts`):
     | `110` | 9 | `bits + 65` (65–576) |
     | `1110` | 12 | `bits + 577` (577–4672) |
     | `1111` | 20 | `bits + 4673`; the value `0xFFFFF` is the **end-of-image** marker |
-    Then a length code: count leading 1-bits `k` (cap 11), read `k` more bits `m`,
+    Then a length code: count leading 1-bits `k` (DoubleAgent breaks after >11, so cap 12), read `k` more bits `m`,
     length `L = (1<<k) + m + offsetBias` where `offsetBias` is 1 for the `10/110/1110`
     classes and 2 for the `1111` class (consumes `2k+1` bits). Copy `L` bytes from
     `out[pos-D]` (byte-by-byte; overlap allowed).
 - Stop at the end marker, or when input/output is exhausted.
 
-## Oracle reader API (for `da-dump`, the answer key — runs DoubleAgent's real code)
-`CAgentFileAcs::CreateInstance()` → `Open(path)`; then `GetImageCount()`,
-`GetImage(i, /*p32Bit*/true)` + `GetImageFormat`/`GetImageBits` (→ 32-bit BGRA,
-color-key already applied to alpha), `GetAnimationNames()`, and
-`GetAnimation(i)` → `CAgentFileAnimation` (`Name`/`ReturnType`/`ReturnName`/
-`FrameCount`/`Frames`) → `CAgentFileFrame` (`Duration`/`SoundNdx`/`ExitFrame`/
-`Branching[3]`/`ImageCount`/`Images`) → `CAgentFileFrameImage` (`ImageNdx`/`Offset`).
-See `oracle/vm-package/`.
+## Validation (Cycle 1) — GO
 
-## Open questions to confirm against the oracle dump
-- Row orientation (bottom-up assumed) — verify our flipped output matches da-dump's BMP.
-- Whether any image uses `compressed == 0` (raw) in Genie/Merlin.
-- The image "part 2" trailing region — not needed for pixel match; confirm it doesn't
-  shift our per-image parse (we seek by `IMGREF.offset`, so trailing data is harmless).
+The byte layout above was **derived by reading DoubleAgent's reader source** (the format/algorithm,
+not the code) and confirmed against a `Genie.acs` hexdump. The Cycle 1 spike is then graded by an
+**independent oracle: Microsoft's own published animation lists** (Microsoft Learn — see
+`packages/acs/test/golden/README.md`):
+
+- **Acceptance #1 (names) — GO.** Our decoder's animation-name set equals Microsoft's published set
+  **exactly**: **Genie 76/76**, **Merlin 73/73** (case- and underscore-exact, incl. Genie's
+  `Idle1_5/1_6`/`Idle2_3` which Merlin lacks). This independently validates the header → gesture
+  index → animation/frame parse. Test: `packages/acs/test/acs-spike.test.ts`.
+- **Acceptance #2 (pixel decode) — GO (structural/visual).** Palette 256, transparency index 10,
+  128×128 frames, 591 (Genie) / 614 (Merlin) decoded images, per-image opaque-pixel counts sane,
+  and the `Greet` animation composites coherently across frames (PNGs reviewed locally; gitignored).
+
+> The genuine MS Agent control + DoubleAgent `da-dump` answer-key approach was **superseded** before
+> implementation (the control exposes no pixel/frame data; the decompiler refuses MS characters).
+> DoubleAgent's source remains the basis of the byte-layout derivation above — that part stands.
+
+## Deferred to Cycle 2 (see ADR-0009)
+Byte-exact unique-image **count** and **per-pixel** grading of decoded images are deferred to
+Cycle 2, where they gate the `acs2bundle` converter. The spike answers "did we decode the format"
+(proven via the exact MS name match + structural/visual decode); byte-exact grading gates "ship the
+converter." Items to settle then, now that there's no per-pixel oracle in Cycle 1:
+- Row orientation (we assume bottom-up DIB and flip to top-down) — confirm per-pixel.
+- Whether any image uses `compressed == 0` (raw) in these characters.
+- The image "part 2" trailing region (region/mask) — harmless to the per-image parse (we seek by
+  `IMGREF.offset`), but model it when byte-exactness is required.
+- **Input hardening**: `parseAcs` currently trusts the on-disk image/animation/palette counts and
+  loops on them directly. Before the browser path ingests untrusted `.acs` uploads (Cycle 2+),
+  bound each count against the remaining file length so a malformed/hostile file degrades instead
+  of over-allocating.

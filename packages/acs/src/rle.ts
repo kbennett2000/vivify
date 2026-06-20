@@ -21,7 +21,9 @@ function u32At(arr: Uint8Array, p: number): number {
 export function decodeImageData(src: Uint8Array, targetSize: number): Uint8Array {
   const out = new Uint8Array(targetSize);
 
-  // Preconditions: leading 0x00, and a run of >=6 trailing 0xFF bytes.
+  // Preconditions (match DoubleAgent's DecodeData exactly): leading 0x00, and
+  // >=5 trailing 0xFF bytes (its guard is `lBitCount < 6`, where lBitCount counts
+  // the trailing 0xFF run + 1).
   if (src.length <= 7 || src[0] !== 0) {
     throw new Error('decodeImageData: missing 0x00 header byte');
   }
@@ -73,6 +75,9 @@ export function decodeImageData(src: Uint8Array, targetSize: number): Uint8Array
 
       // ---- decode the run length (gamma-style code) ----
       const runBits = u32At(src, srcPos - 4);
+      // Count leading 1-bits (DoubleAgent breaks after exceeding 11, so the
+      // effective cap is 12). bit stays <= 7 at token entry, so the 0xffff mask
+      // mirrors the source `LOWORD(...)` but never actually truncates.
       let runCount = 0;
       while (runBits & (1 << ((bit + runCount) & 0xffff))) {
         runCount++;
