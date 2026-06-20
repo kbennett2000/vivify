@@ -2,12 +2,12 @@
 //
 // A bundle is: manifest.json (this schema) + sheet.png (packed atlas of all
 // unique images) + audio/*.wav (extracted sounds). The manifest is everything
-// in @vivify/core's CharacterModel MINUS pixel data, plus a sprite-atlas
+// in @vivify/types' CharacterModel MINUS pixel data, plus a sprite-atlas
 // coordinate table and audio file references. See docs/cycles/cycle-0-contracts.md.
 //
 // This zod schema is the source of truth for the manifest; the JSON Schema is
 // generated from it. Compile-time guards below keep the shared sub-shapes
-// (animations, balloon, voice) in lock-step with the core IR.
+// (animations, frames, balloon, voice) in lock-step with the @vivify/types IR.
 
 import { z } from 'zod';
 import type {
@@ -18,7 +18,7 @@ import type {
   FrameModel,
   MouthOverlay,
   VoiceConfig,
-} from '@vivify/core';
+} from '@vivify/types';
 
 /** Bumped whenever the on-disk manifest shape changes incompatibly. */
 export const FORMAT_VERSION = 1 as const;

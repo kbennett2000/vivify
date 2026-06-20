@@ -3,7 +3,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { StubTtsProvider } from '../src/provider.js';
-import type { VoiceConfig } from '../src/types.js';
+import type { VoiceConfig } from '@vivify/types';
 
 describe('StubTtsProvider (Cycle 0 stub)', () => {
   it('resolves to empty audio and an empty mouth timeline', async () => {

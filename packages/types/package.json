@@ -1,5 +1,5 @@
 {
-  "name": "@vivify/core",
+  "name": "@vivify/types",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -15,11 +15,8 @@
     "dist"
   ],
   "scripts": {
-    "typecheck": "tsc --build --pretty && tsc -p tsconfig.test.json",
+    "typecheck": "tsc --build --pretty",
     "test": "vitest run --passWithNoTests",
     "clean": "rm -rf dist *.tsbuildinfo"
-  },
-  "dependencies": {
-    "@vivify/types": "workspace:*"
   }
 }

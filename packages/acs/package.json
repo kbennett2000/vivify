@@ -23,7 +23,7 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
-    "@vivify/core": "workspace:*",
+    "@vivify/types": "workspace:*",
     "zod": "^4.0.0"
   }
 }
