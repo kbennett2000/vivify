@@ -1,0 +1,79 @@
+{
+  "formatVersion": 1,
+  "info": {
+    "guid": "{D45FD2FC-5C6E-11D1-9EC1-00C04FD7081F}",
+    "name": "Sample",
+    "width": 128,
+    "height": 128
+  },
+  "palette": [
+    [0, 0, 0],
+    [255, 255, 255],
+    [255, 0, 0]
+  ],
+  "transparentIndex": 0,
+  "sheet": "sheet.png",
+  "atlas": [
+    { "x": 0, "y": 0, "w": 128, "h": 128 },
+    { "x": 128, "y": 0, "w": 128, "h": 128 }
+  ],
+  "animations": [
+    {
+      "name": "Greet",
+      "transitionType": 0,
+      "returnAnimation": "RestPose",
+      "frames": [
+        {
+          "images": [{ "imageIndex": 0, "x": 0, "y": 0 }],
+          "durationMs": 100,
+          "branches": [{ "frameIndex": 1, "probability": 100 }],
+          "soundIndex": 0
+        },
+        {
+          "images": [
+            { "imageIndex": 1, "x": 0, "y": 0 },
+            { "imageIndex": 0, "x": 10, "y": 4 }
+          ],
+          "durationMs": 80,
+          "branches": [],
+          "exitFrame": 0,
+          "mouth": { "raw": { "shape": 3 } }
+        }
+      ]
+    },
+    {
+      "name": "RestPose",
+      "transitionType": 1,
+      "frames": [
+        {
+          "images": [{ "imageIndex": 0, "x": 0, "y": 0 }],
+          "durationMs": 0,
+          "branches": []
+        }
+      ]
+    }
+  ],
+  "sounds": [{ "src": "audio/0.wav" }],
+  "balloon": {
+    "numLines": 2,
+    "charsPerLine": 32,
+    "fontName": "Tahoma",
+    "fontHeight": 12,
+    "fg": [0, 0, 0],
+    "bg": [255, 255, 255],
+    "border": [0, 0, 0]
+  },
+  "voice": {
+    "engineModeId": "{AnyEngineModeGuid}",
+    "languageId": 1033,
+    "gender": "male",
+    "speed": 157,
+    "pitch": 100,
+    "raw": { "extra": "preserved" }
+  },
+  "states": {
+    "Showing": ["Greet"],
+    "Hiding": ["RestPose"],
+    "Speaking": ["Greet"]
+  }
+}

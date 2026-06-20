@@ -15,7 +15,7 @@
     "dist"
   ],
   "scripts": {
-    "typecheck": "tsc --build --pretty",
+    "typecheck": "tsc --build --pretty && tsc -p tsconfig.test.json",
     "test": "vitest run --passWithNoTests",
     "clean": "rm -rf dist *.tsbuildinfo"
   }
