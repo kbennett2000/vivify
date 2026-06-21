@@ -1,8 +1,13 @@
-// Cycle 10 acceptance (docs/cycles/cycle-10-latency.md → "What is verified where",
-// CI bullet): "`parseBridgeTiming` unit tests (valid line → struct; missing/garbled
-// → null; tolerant of extra fields)". These are pure-function tests — no Wine, no
-// child process. The server-side end-to-end (fake bridge emits a `[timing]` line →
-// `onTiming` receives the parsed stages) lives in server.test.ts.
+// Cycle 11 acceptance (docs/cycles/cycle-11-latency-singlepass.md → "What is
+// verified where", CI bullet): the timing parse/format that backs the per-request
+// `[tts-timing]` breakdown. Pure-function tests — no Wine, no child process. The
+// bridge is now single-pass: the `[timing]` line drops `passB_*`, and TtsTiming
+// carries server stages {bridgeMs, wineLoadMs, windowFirstByteMs, buildMs, encodeMs}
+// + the parsed bridge. Cycle 11 follow-up: the per-request `parec` became a PERSISTENT
+// windowed source, so the old captureReadyMs/captureMs/captureStopMs stages are gone
+// and a single windowFirstByteMs (beginWindow → first buffered chunk) replaces them.
+// The server-side end-to-end (fake bridge emits the line → onTiming) lives in
+// server.test.ts.
 
 import { describe, it, expect } from 'vitest';
 import {
@@ -15,60 +20,54 @@ import {
 describe('parseBridgeTiming', () => {
   it('extracts every field from a valid [timing] line embedded in multi-line stderr', () => {
     const stderr = [
+      '[boot] bridge up',
       '[mmaudio] events=412 spanMs=1840 qTimeStamp=[0..1840] AudioStart=80',
-      '[file-wav] events=0 spanMs=420',
-      '[timing] initMs=12 passA_ttfbMs=80 passA_totalMs=1840 passB_ttfbMs=15 passB_totalMs=420 writeMs=1 totalMs=2290',
-      'ok: wrote out.wav (40500 bytes) + out.json',
+      '[timing] initMs=12 passA_ttfbMs=80 passA_totalMs=1840 writeMs=1 totalMs=2290',
+      'ok: wrote out.json',
     ].join('\n');
 
     const expected: BridgeTiming = {
       initMs: 12,
       passATtfbMs: 80,
       passATotalMs: 1840,
-      passBTtfbMs: 15,
-      passBTotalMs: 420,
       writeMs: 1,
       totalMs: 2290,
     };
     expect(parseBridgeTiming(stderr)).toEqual(expected);
   });
 
-  it('extracts standalone totalMs, not a substring of passA_totalMs / passB_totalMs', () => {
-    // The three "*total*" values are deliberately all different so a sloppy regex that
+  it('extracts standalone totalMs, not a substring of passA_totalMs', () => {
+    // The two "*total*" values are deliberately different so a sloppy regex that
     // matched `totalMs=` inside `passA_totalMs=` would pick the wrong number.
-    const stderr =
-      '[timing] initMs=5 passA_ttfbMs=10 passA_totalMs=1111 passB_ttfbMs=4 passB_totalMs=2222 writeMs=1 totalMs=3333';
+    const stderr = '[timing] initMs=5 passA_ttfbMs=10 passA_totalMs=1111 writeMs=1 totalMs=3333';
     const t = parseBridgeTiming(stderr);
     expect(t).not.toBeNull();
     expect(t?.passATotalMs).toBe(1111);
-    expect(t?.passBTotalMs).toBe(2222);
     expect(t?.totalMs).toBe(3333);
-    // And the three really are distinct (guards against any one accidentally aliasing another).
-    expect(new Set([t?.passATotalMs, t?.passBTotalMs, t?.totalMs]).size).toBe(3);
+    // And the two really are distinct (guards against one aliasing the other).
+    expect(new Set([t?.passATotalMs, t?.totalMs]).size).toBe(2);
   });
 
   it('returns null when there is no [timing] line at all', () => {
-    const stderr = ['[mmaudio] events=412 spanMs=1840', 'ok: wrote out.wav'].join('\n');
+    const stderr = ['[mmaudio] events=412 spanMs=1840', 'ok: wrote out.json'].join('\n');
     expect(parseBridgeTiming(stderr)).toBeNull();
   });
 
   it('returns null when the [timing] line is missing a field (no writeMs)', () => {
-    const stderr =
-      '[timing] initMs=12 passA_ttfbMs=80 passA_totalMs=1840 passB_ttfbMs=15 passB_totalMs=420 totalMs=2290';
+    const stderr = '[timing] initMs=12 passA_ttfbMs=80 passA_totalMs=1840 totalMs=2290';
     expect(parseBridgeTiming(stderr)).toBeNull();
   });
 
   it('returns null when a field is non-numeric', () => {
-    const stderr =
-      '[timing] initMs=12 passA_ttfbMs=80 passA_totalMs=NaN passB_ttfbMs=15 passB_totalMs=420 writeMs=1 totalMs=2290';
+    const stderr = '[timing] initMs=12 passA_ttfbMs=80 passA_totalMs=NaN writeMs=1 totalMs=2290';
     expect(parseBridgeTiming(stderr)).toBeNull();
   });
 
   it('uses the LAST [timing] line when several are present', () => {
     const stderr = [
-      '[timing] initMs=99 passA_ttfbMs=99 passA_totalMs=99 passB_ttfbMs=99 passB_totalMs=99 writeMs=99 totalMs=99',
+      '[timing] initMs=99 passA_ttfbMs=99 passA_totalMs=99 writeMs=99 totalMs=99',
       '[mmaudio] events=412',
-      '[timing] initMs=12 passA_ttfbMs=80 passA_totalMs=1840 passB_ttfbMs=15 passB_totalMs=420 writeMs=1 totalMs=2290',
+      '[timing] initMs=12 passA_ttfbMs=80 passA_totalMs=1840 writeMs=1 totalMs=2290',
     ].join('\n');
 
     const t = parseBridgeTiming(stderr);
@@ -76,8 +75,6 @@ describe('parseBridgeTiming', () => {
       initMs: 12,
       passATtfbMs: 80,
       passATotalMs: 1840,
-      passBTtfbMs: 15,
-      passBTotalMs: 420,
       writeMs: 1,
       totalMs: 2290,
     });
@@ -85,50 +82,89 @@ describe('parseBridgeTiming', () => {
 });
 
 describe('formatTtsTiming', () => {
-  it('includes the parsed bridge stages and the grand total when bridge is present', () => {
+  it('includes the parsed bridge stages, server stages, total, and computed teardown', () => {
     const t: TtsTiming = {
       bridgeMs: 2300,
-      readMs: 4,
+      wineLoadMs: 200,
+      windowFirstByteMs: 45,
+      buildMs: 4,
       encodeMs: 2,
       totalMs: 2310,
       bridge: {
         initMs: 12,
         passATtfbMs: 80,
         passATotalMs: 1840,
-        passBTtfbMs: 15,
-        passBTotalMs: 420,
         writeMs: 1,
-        totalMs: 2290,
+        totalMs: 2000,
       },
     };
     const out = formatTtsTiming(t);
+
     // Grand total.
     expect(out).toContain('total=2310ms');
-    // Server stages.
+    // Server stages (Cycle 11 follow-up: the persistent windowed source reports a single
+    // windowFirstByte — beginWindow → first buffered chunk — replacing the old
+    // captureReady/capture/captureStop stages; build = wrap+trim).
+    expect(out).toContain('windowFirstByte=45');
     expect(out).toContain('bridgeWall=2300');
-    expect(out).toContain('read=4');
+    expect(out).toContain('wineLoad=200');
+    expect(out).toContain('build=4');
     expect(out).toContain('encode=2');
-    // Bridge breakdown (each stage's number, plus ttfb annotations).
+    // The dropped stages must be gone from the output.
+    expect(out).not.toContain('captureReady=');
+    expect(out).not.toContain('capture=');
+    expect(out).not.toContain('captureStop=');
+    // teardown = max(0, bridgeMs − wineLoadMs − bridge.totalMs) = 2300 − 200 − 2000 = 100.
+    expect(out).toContain('teardown=100');
+    // Bridge breakdown (each stage's number, plus ttfb annotation).
     expect(out).toContain('init=12');
     expect(out).toContain('passA=1840(ttfb 80)');
-    expect(out).toContain('passB=420(ttfb 15)');
     expect(out).toContain('write=1');
-    expect(out).toContain('total=2290]');
+    expect(out).toContain('self=2000]');
   });
 
-  it('reports "timing unavailable" but still the server stages + total when bridge is null', () => {
+  it('clamps teardown at 0 when the bridge self-time exceeds the observed wall time', () => {
+    const t: TtsTiming = {
+      bridgeMs: 1000,
+      wineLoadMs: 100,
+      windowFirstByteMs: 30,
+      buildMs: 3,
+      encodeMs: 1,
+      totalMs: 1010,
+      bridge: {
+        initMs: 5,
+        passATtfbMs: 10,
+        passATotalMs: 1840,
+        writeMs: 1,
+        totalMs: 2000, // > bridgeMs − wineLoadMs → teardown would be negative
+      },
+    };
+    // max(0, 1000 − 100 − 2000) = 0.
+    expect(formatTtsTiming(t)).toContain('teardown=0');
+  });
+
+  it('reports "timing unavailable" but still wineLoad + server stages + total when bridge is null', () => {
     const t: TtsTiming = {
       bridgeMs: 2300,
-      readMs: 4,
+      wineLoadMs: 200,
+      windowFirstByteMs: 45,
+      buildMs: 4,
       encodeMs: 2,
       totalMs: 2310,
       bridge: null,
     };
     const out = formatTtsTiming(t);
-    expect(out).toContain('timing unavailable');
+    expect(out).toContain('bridge[timing unavailable]');
     expect(out).toContain('total=2310ms');
+    expect(out).toContain('windowFirstByte=45');
     expect(out).toContain('bridgeWall=2300');
-    expect(out).toContain('read=4');
+    expect(out).toContain('wineLoad=200');
+    expect(out).toContain('build=4');
     expect(out).toContain('encode=2');
+    expect(out).not.toContain('captureReady=');
+    expect(out).not.toContain('capture=');
+    expect(out).not.toContain('captureStop=');
+    // No teardown when there's no bridge self-time to subtract.
+    expect(out).not.toContain('teardown=');
   });
 });

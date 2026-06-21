@@ -31,6 +31,31 @@ else
   echo "WARN: pulse socket /tmp/pulse-socket not present after wait" >&2
 fi
 
+# --- continuous silent feed (Cycle 11) --------------------------------------
+# A null sink only RUNS (and its .monitor only streams) while something plays into it; with nothing
+# playing, parec on dummy.monitor gets no samples until the first real synth — so the capture reader
+# wasn't live until the first Speak, and that first window was the cold/clipped one (proved by the
+# operator's startup log: `[warmup] failed … window empty` printed BEFORE `[capture] … is live`).
+# Keep a continuous stream of digital silence (/dev/zero, raw s16le) playing into the sink so it's
+# always RUNNING and the monitor always streams, from boot. Zeros add nothing to the mix → captured
+# speech is byte-identical; the server's trimLeadingSilence drops the idle silence. Restart-looped so
+# a transient pulse hiccup can't permanently un-warm the capture path.
+if [ -S /tmp/pulse-socket ]; then
+  ( while true; do
+      pacat --playback --device=dummy --rate=44100 --channels=1 --format=s16le /dev/zero \
+        >/dev/null 2>&1
+      sleep 0.5
+    done ) &
+  echo "pulse: continuous silent feed into dummy started (monitor stays live)"
+else
+  echo "WARN: no pulse socket — skipping silent feed; capture monitor may stay idle until first play." >&2
+fi
+
+# NOTE (Cycle 11): the null-sink monitor reader is now owned by the SERVER — one persistent
+# `parec` for the container's lifetime, windowed per request (see CaptureSource in src/capture.ts).
+# That supersedes the earlier shell-level keep-warm reader: per-request `parec` spawn is gone, so
+# captureReady variance is gone, and the source stays continuously hot.
+
 # --- persistent Xvfb (Cycle 10) ---------------------------------------------
 # The per-request bridge command is now a plain `wine …` (no `xvfb-run -a`), so it needs a
 # live display. Start ONE Xvfb on :99 for the whole container instead of one per request.
@@ -51,23 +76,16 @@ else
   echo "WARN: Xvfb $DISPLAY did not come up — bridge synthesis will fail until it does." >&2
 fi
 
-# --- warm the Wine prefix + engine (Cycle 10) -------------------------------
+# --- warm the Wine prefix (Cycle 10) ----------------------------------------
 # wineboot once, then keep wineserver PERSISTENT (-p) so it doesn't tear down between
 # requests (which would re-pay prefix init on the next `wine`). Best-effort: a failure here
 # only means requests run cold, not that the container dies.
 wineboot --init >/dev/null 2>&1 || echo "WARN: wineboot --init failed (requests will run colder)." >&2
 wineserver -p >/dev/null 2>&1 || echo "WARN: 'wineserver -p' (persist) failed." >&2
 
-# Warmup synth: speak a tiny phrase so the TruVoice DLLs + COM registration are paged in and
-# the OS file cache is warm. Output is discarded; non-fatal. Its [timing] line shows the
-# first-pass cost so the cold-vs-warm delta is visible in the logs.
-BRIDGE_EXE="/opt/vivify/bridge/sapi4-mouth.exe"
-if [ -f "$BRIDGE_EXE" ]; then
-  printf 'warm' >/tmp/warm.txt
-  echo "warmup: priming the SAPI4 engine…"
-  wine "$BRIDGE_EXE" --text-file /tmp/warm.txt --wav /tmp/warm.wav --timeline /tmp/warm.json \
-    || echo "WARN: warmup synth failed (first real Speak will be colder)." >&2
-  rm -f /tmp/warm.txt /tmp/warm.wav /tmp/warm.json
-fi
+# NOTE: the engine + CAPTURE pipeline (parec + null-sink monitor + winepulse) are warmed by the
+# SERVER at startup via one real synthesis (see `warmUp` in src/server.ts) — that primes the whole
+# /tts path, not just the engine, so the FIRST real Speak isn't cold. A bridge-only warmup here
+# (Cycle 10) left the capture path cold and clipped the first Speak's opening; it's removed.
 
 exec "$@"

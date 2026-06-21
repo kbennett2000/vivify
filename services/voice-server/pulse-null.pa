@@ -3,5 +3,13 @@
 # provide a NULL sink that accepts and discards audio. An anonymous unix socket lets the
 # (root) Wine process connect to the (pulse-user) system daemon.
 load-module module-native-protocol-unix auth-anonymous=1 socket=/tmp/pulse-socket
-load-module module-null-sink sink_name=dummy sink_properties=device.description=dummy_output
+# Cycle 11: pin the sink format so its `.monitor` source is deterministic — the server
+# records it with `parec --format=s16le --rate=44100 --channels=1` for the single-pass WAV,
+# and a matching format means no resampling guesswork (see docs/cycles/cycle-11-latency-singlepass.md).
+# NOTE: a null sink only RUNS — and thus its `.monitor` only streams — while something is PLAYING into
+# it; with nothing playing, `parec` on the monitor gets no samples (proved by the operator's log: the
+# capture reader only went live after the first synthesis). So entrypoint.sh keeps a CONTINUOUS stream
+# of digital silence (/dev/zero) feeding `dummy`, holding it RUNNING so the monitor streams from boot.
+# (We also load NO module-suspend-on-idle, so the sink never suspends on top of that.)
+load-module module-null-sink sink_name=dummy format=s16le rate=44100 channels=1 sink_properties=device.description=dummy_output
 set-default-sink dummy
