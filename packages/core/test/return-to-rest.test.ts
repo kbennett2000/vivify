@@ -1,16 +1,15 @@
-// Cycle 8 (docs/cycles/cycle-8-return-to-rest.md → "What is verified where" →
-// "CI (this repo): ... the engine behavior via synthetic models + FakeClock + a
-// fake Document — transitionType 1 renders the exit chain and ends on the rest
-// frame; transitionType 0 plays the return animation; transitionType 2 adds no
-// frames; a second queued play renders only after the first's return (no hard
-// cut); abort during the return stops it.").
+// Cycle 8 + correction (docs/decisions/0020-animation-return-to-rest.md, as
+// corrected after PR #10 over-corrected): a gesture now HOLDS its end pose on
+// completion — it does NOT auto-return to rest. The walk back to rest happens
+// (a) at the START of a DIFFERENT gesture (the previously-held pose is walked
+// back first, then the new gesture plays), and (b) on an explicit stop().
 //
 // All synthetic: no .acs, no real browser/canvas. The fake Document is an
 // external collaborator (reused from speak-lipsync.test.ts's pattern): each
 // composited frame is identified by the WIDTH of the image it draws, so the
 // recorded draw sequence tells us exactly which frames rendered, in order. We
 // drive everything with the FakeClock and assert the agent's REAL playback +
-// return-to-rest + serial-queue behavior — we never mock the code under test.
+// hold/return-to-rest + serial-queue behavior — we never mock the code under test.
 
 import { describe, it, expect } from 'vitest';
 import type { AnimationModel, CharacterModel, FrameModel, ImageModel } from '@vivify/types';
@@ -186,8 +185,8 @@ async function run(clock: FakeClock, totalMs: number, stepMs = 50): Promise<void
   }
 }
 
-describe('return-to-rest: transitionType 1 (exit-branch)', () => {
-  it('renders the exit chain after the main frames and ends on the rest frame', async () => {
+describe('hold-on-completion: a gesture does NOT auto-return to rest', () => {
+  it("transitionType 1: holds the end pose — the exit chain does NOT render; the last drawn frame is the gesture's own last frame", async () => {
     const clock = new FakeClock();
     const fd = makeFakeDoc();
     const agent = createAgentFromModel(baseModel([animExitBranch('A')]), fd.mount, {
@@ -196,66 +195,25 @@ describe('return-to-rest: transitionType 1 (exit-branch)', () => {
     });
 
     const done = agent.play('A');
-    // Drive the whole forward play + the exit-branch return-to-rest walk.
+    // Drive the whole forward play; there is NOTHING after it (no auto-return).
     await run(clock, 1000);
     await expect(done).resolves.toBeUndefined();
 
     const seq = widths(fd.draws);
-    // Forward: MAIN0 then MAIN2 (branch). Return: REST.
+    // Forward: MAIN0 then MAIN2 (branch).
     expect(seq).toContain(MAIN0_W);
     expect(seq).toContain(MAIN2_W);
-    // The rest frame is composited only as part of the return walk, AFTER the mains.
-    expect(seq.lastIndexOf(REST_W)).toBeGreaterThan(seq.lastIndexOf(MAIN2_W));
-    expect(seq.lastIndexOf(REST_W)).toBeGreaterThan(seq.lastIndexOf(MAIN0_W));
-    // The FINAL composited frame is the rest pose — the character ends neutral.
-    expect(seq[seq.length - 1]).toBe(REST_W);
+    // The exit-chain REST frame is NOT composited — the gesture holds its end pose.
+    expect(seq).not.toContain(REST_W);
+    // The FINAL composited frame is the gesture's own last frame (the held pose).
+    expect(seq[seq.length - 1]).toBe(MAIN2_W);
   });
-});
 
-describe('return-to-rest: transitionType 0 (named return animation)', () => {
-  it("plays the named return animation's frames after the gesture's own frames", async () => {
+  it("transitionType 2: holds, adds no extra frames — the last drawn frame is the animation's own last frame", async () => {
     const clock = new FakeClock();
     const fd = makeFakeDoc();
 
-    // A (transitionType 0, returnAnimation 'B'): a single main frame.
-    const a: AnimationModel = {
-      name: 'A',
-      transitionType: 0,
-      returnAnimation: 'B',
-      frames: [fr(IMG.MAIN0)],
-    };
-    // B: the named return — its frame is the distinct rest pose.
-    const b: AnimationModel = {
-      name: 'B',
-      transitionType: 2, // B is itself neutral-ending, so no recursion
-      frames: [fr(IMG.B_REST)],
-    };
-
-    const agent = createAgentFromModel(baseModel([a, b]), fd.mount, {
-      clock,
-      rng: () => 0,
-    });
-
-    const done = agent.play('A');
-    await run(clock, 1000);
-    await expect(done).resolves.toBeUndefined();
-
-    const seq = widths(fd.draws);
-    expect(seq).toContain(MAIN0_W);
-    // B's rest frame renders, and it renders AFTER A's frame (the return follows).
-    expect(seq).toContain(B_REST_W);
-    expect(seq.lastIndexOf(B_REST_W)).toBeGreaterThan(seq.lastIndexOf(MAIN0_W));
-    // Ends neutral on B's frame.
-    expect(seq[seq.length - 1]).toBe(B_REST_W);
-  });
-});
-
-describe('return-to-rest: transitionType 2 (none)', () => {
-  it("adds no extra frames — the last drawn frame is the animation's own last frame", async () => {
-    const clock = new FakeClock();
-    const fd = makeFakeDoc();
-
-    // Two frames, both with images. transitionType 2 → no return-to-rest.
+    // Two frames, both with images. transitionType 2 → no return-to-rest ever.
     const a: AnimationModel = {
       name: 'A',
       transitionType: 2,
@@ -289,47 +247,143 @@ describe('return-to-rest: transitionType 2 (none)', () => {
   });
 });
 
-describe('serial queue: the next action starts only after the return-to-rest completes', () => {
-  it('renders C only after A has walked back to its rest frame (no hard cut)', async () => {
+describe('transition through rest BEFORE the next gesture (not after each one)', () => {
+  it("transitionType 1: playing B walks A's held pose back through its exit-chain REST frame BEFORE B's first frame (no hard cut)", async () => {
     const clock = new FakeClock();
     const fd = makeFakeDoc();
 
-    const c: AnimationModel = {
-      name: 'C',
+    // B is a distinct second gesture (single frame, type 2 so it just holds).
+    const b: AnimationModel = {
+      name: 'B',
       transitionType: 2,
       frames: [fr(IMG.C_FIRST)],
     };
 
-    const agent = createAgentFromModel(baseModel([animExitBranch('A'), c]), fd.mount, {
+    const agent = createAgentFromModel(baseModel([animExitBranch('A'), b]), fd.mount, {
       clock,
       rng: () => 0,
     });
 
-    // Enqueue A (type 1 with an exit chain) then immediately C.
-    void agent.play('A');
-    const doneC = agent.play('C');
+    // Play A and let it COMPLETE (held end pose, no return yet).
+    const doneA = agent.play('A');
+    await run(clock, 1000);
+    await expect(doneA).resolves.toBeUndefined();
 
-    await run(clock, 2000);
-    await expect(doneC).resolves.toBeUndefined();
+    const afterA = widths(fd.draws);
+    // A held on its own last frame; the REST exit frame has NOT rendered yet.
+    expect(afterA[afterA.length - 1]).toBe(MAIN2_W);
+    expect(afterA).not.toContain(REST_W);
+
+    // Now play a DIFFERENT gesture B. The held A pose must first walk back to
+    // rest (its exit chain → REST) and only THEN B's first frame renders.
+    const doneB = agent.play('B');
+    await run(clock, 1000);
+    await expect(doneB).resolves.toBeUndefined();
 
     const seq = widths(fd.draws);
-    // A's rest frame appears (return-to-rest ran)...
+    // A's exit-chain REST frame now appears...
     expect(seq).toContain(REST_W);
     expect(seq).toContain(C_FIRST_W);
-    // ...and C's first frame renders strictly AFTER A's rest frame — the serial
-    // queue lets A finish returning to rest before C begins (no hard cut from a
-    // frozen non-neutral pose).
+    // ...strictly BEFORE B's first frame — the return-to-rest precedes the next
+    // gesture (no hard cut from the frozen non-neutral pose).
     expect(seq.indexOf(C_FIRST_W)).toBeGreaterThan(seq.lastIndexOf(REST_W));
+    // B ends on (holds) its own frame.
+    expect(seq[seq.length - 1]).toBe(C_FIRST_W);
+  });
+
+  it("transitionType 0: playing B first plays A's named return animation R, then B", async () => {
+    const clock = new FakeClock();
+    const fd = makeFakeDoc();
+
+    // A (transitionType 0, returnAnimation 'R'): a single main frame.
+    const a: AnimationModel = {
+      name: 'A',
+      transitionType: 0,
+      returnAnimation: 'R',
+      frames: [fr(IMG.MAIN0)],
+    };
+    // R: the named return — its frame is the distinct rest pose. Type 2 so it
+    // doesn't itself trigger any further return.
+    const r: AnimationModel = {
+      name: 'R',
+      transitionType: 2,
+      frames: [fr(IMG.B_REST)],
+    };
+    // B: the next gesture.
+    const b: AnimationModel = {
+      name: 'B',
+      transitionType: 2,
+      frames: [fr(IMG.C_FIRST)],
+    };
+
+    const agent = createAgentFromModel(baseModel([a, r, b]), fd.mount, {
+      clock,
+      rng: () => 0,
+    });
+
+    // Play A; it holds on its own frame (no return on completion).
+    const doneA = agent.play('A');
+    await run(clock, 1000);
+    await expect(doneA).resolves.toBeUndefined();
+
+    const afterA = widths(fd.draws);
+    expect(afterA[afterA.length - 1]).toBe(MAIN0_W);
+    // The named return R has NOT played yet.
+    expect(afterA).not.toContain(B_REST_W);
+
+    // Play B → A's named return R plays first, then B.
+    const doneB = agent.play('B');
+    await run(clock, 1000);
+    await expect(doneB).resolves.toBeUndefined();
+
+    const seq = widths(fd.draws);
+    expect(seq).toContain(B_REST_W); // R's frame
+    expect(seq).toContain(C_FIRST_W); // B's frame
+    // R renders BEFORE B (return precedes the next gesture).
+    expect(seq.indexOf(C_FIRST_W)).toBeGreaterThan(seq.lastIndexOf(B_REST_W));
+    expect(seq[seq.length - 1]).toBe(C_FIRST_W);
+  });
+});
+
+describe('stop() returns the held gesture pose to rest', () => {
+  it("after a held gesture, stop() walks A's exit-chain REST frame; before stop there is no return", async () => {
+    const clock = new FakeClock();
+    const fd = makeFakeDoc();
+
+    const agent = createAgentFromModel(baseModel([animExitBranch('A')]), fd.mount, {
+      clock,
+      rng: () => 0,
+    });
+
+    // Play A to completion → it holds; no return-to-rest yet.
+    const doneA = agent.play('A');
+    await run(clock, 1000);
+    await expect(doneA).resolves.toBeUndefined();
+
+    const beforeStop = widths(fd.draws);
+    expect(beforeStop[beforeStop.length - 1]).toBe(MAIN2_W);
+    expect(beforeStop).not.toContain(REST_W); // no return appeared on its own
+
+    // Stop → enqueues the return-to-rest of the held pose. Advancing the clock
+    // walks A's exit chain to its REST frame.
+    agent.stop();
+    await run(clock, 1000);
+
+    const seq = widths(fd.draws);
+    expect(seq).toContain(REST_W);
+    // The return ran AFTER the held last frame, and ends on the rest pose.
+    expect(seq.lastIndexOf(REST_W)).toBeGreaterThan(seq.indexOf(MAIN2_W));
+    expect(seq[seq.length - 1]).toBe(REST_W);
   });
 });
 
 describe('abort during the return walk stops it', () => {
-  it('draws no further frames once stop() lands mid return-to-rest', async () => {
+  it('draws no further frames once a second stop() lands mid return-to-rest', async () => {
     const clock = new FakeClock();
     const fd = makeFakeDoc();
 
     // A longer exit chain so we can stop partway: forward branches 0 -> 4 (last),
-    // then exit 4 -> 1 -> 2 -> 3 (terminal). We stop after the first return step.
+    // then exit 4 -> 1 -> 2 -> 3 (terminal). We stop the return after its first step.
     //   0 MAIN0   (branch -> 4)
     //   1 REST     (exit -> 2)   <- first return step
     //   2 T2_LAST  (exit -> 3)   <- second return step
@@ -352,12 +406,16 @@ describe('abort during the return walk stops it', () => {
       rng: () => 0,
     });
 
-    void agent.play('A');
-    // Advance just far enough to finish the forward play (frame 0 -> 4) and render
-    // the FIRST return step (REST), but not the rest of the exit chain.
-    await flush();
-    clock.advance(100); // fire frame 0's timer -> branch to frame 4 (forward end)
-    await flush(); // playForward resolves -> returnToRest -> playIndices first step (REST)
+    // Play A to its held end pose (forward 0 -> 4). No return runs on its own.
+    const doneA = agent.play('A');
+    await run(clock, 1000);
+    await expect(doneA).resolves.toBeUndefined();
+    expect(widths(fd.draws)).not.toContain(REST_W);
+
+    // First stop() → enqueues the return walk. Advance just enough to render the
+    // FIRST return step (REST) but not the rest of the chain.
+    agent.stop();
+    await flush(); // queued returnToRest starts -> playIndices first step (REST)
 
     const seqBeforeStop = widths(fd.draws);
     // The return walk has started (REST drawn) but not finished (B_REST not yet) —
@@ -366,6 +424,7 @@ describe('abort during the return walk stops it', () => {
     expect(seqBeforeStop).not.toContain(B_REST_W);
 
     const drawsAtStop = fd.draws.length;
+    // A second stop() aborts the in-flight return walk.
     agent.stop();
 
     // No further frames render no matter how far the clock advances.

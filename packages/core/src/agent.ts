@@ -4,7 +4,13 @@
 // mounts a host element it owns. Browser-only (harness-validated); the pure
 // logic it composes (playback/queue/wrap/states) is unit-tested separately.
 
-import type { AnimationModel, CharacterModel, TtsProvider, TtsResult } from '@vivify/types';
+import type {
+  AnimationModel,
+  CharacterModel,
+  FrameModel,
+  TtsProvider,
+  TtsResult,
+} from '@vivify/types';
 import type { Agent, AgentEvent, CharacterBundleRef, MoveOptions, SpeakOptions } from './types.js';
 import { ActionQueue } from './queue.js';
 import { Playback, playableLength, computeExitPath, type Rng } from './playback.js';
@@ -50,6 +56,15 @@ class VivifyAgent implements Agent {
   private posX = 0;
   private posY = 0;
   private disposed = false;
+  // The gesture pose currently HELD (null ⇒ at rest). A finished gesture holds its end
+  // pose for stacking (e.g. point, then speak while pointing); we walk it back to rest
+  // only before a different gesture or on an explicit stop() (ADR-0020).
+  private heldAnim: AnimationModel | null = null;
+  private heldIndex = 0;
+  // Lazily-found frame carrying mouth overlays, used as the speak base when the held
+  // frame has none so lip-sync always has somewhere to composite (undefined = not yet
+  // computed, null = the character has no overlay-bearing frame).
+  private overlayBaseFrame?: FrameModel | null;
 
   constructor(
     private readonly model: CharacterModel,
@@ -148,8 +163,10 @@ class VivifyAgent implements Agent {
     this.emit('speak', text);
     const provider = opts?.provider ?? this.provider;
     return this.queue.enqueue(async (signal) => {
+      // Load the text now (balloon stays display:none); it's SHOWN only once audio/the
+      // heuristic animation actually starts, so it doesn't appear seconds before the
+      // voice during the ~2-3s synthesis (cycle-8 #3).
       this.balloon.setText(text);
-      this.balloon.show();
       // Ask the provider to synthesize (cancellable). A failure/abort/no-backend
       // falls back to the silent heuristic path below.
       let result: TtsResult | null = null;
@@ -208,6 +225,13 @@ class VivifyAgent implements Agent {
     this.queue.stop();
     this.current?.cancel();
     this.current = null;
+    // "Stop / return to rest": after halting, walk the held gesture pose back to rest.
+    if (this.heldAnim) {
+      const held = this.heldAnim;
+      const idx = this.heldIndex;
+      this.heldAnim = null;
+      void this.queue.enqueue((signal) => this.returnToRest(held, idx, signal));
+    }
   }
 
   on(event: AgentEvent, handler: (...a: unknown[]) => void): void {
@@ -300,16 +324,48 @@ class VivifyAgent implements Agent {
   }
 
   /**
-   * Play a named gesture animation, then walk it back to a neutral rest pose so the
-   * character never freezes on a non-neutral frame (and the next queued action starts
-   * from rest — no hard cut). The return path follows the animation's `transitionType`
-   * (cycle-8 / ADR-0020).
+   * Play a named gesture animation, HOLDING its end pose on completion (so actions can
+   * stack — e.g. point, then speak while pointing). If a previous gesture pose is still
+   * held, walk THAT back to rest first so this one starts from rest (no hard cut). The
+   * return path follows the held animation's `transitionType` (cycle-8 / ADR-0020).
    */
   private async runGestureAnimation(name: string, signal: AbortSignal): Promise<void> {
     const anim = this.animMap.get(name);
     if (!anim) return;
+    // Transition through rest before a different gesture (only when not already at rest).
+    if (this.heldAnim && !signal.aborted) {
+      await this.returnToRest(this.heldAnim, this.heldIndex, signal);
+      this.heldAnim = null;
+    }
+    if (signal.aborted) return;
     const lastIndex = await this.playForward(anim, signal);
-    if (!signal.aborted) await this.returnToRest(anim, lastIndex, signal);
+    // Hold the end pose; do NOT auto-return (return happens before the next gesture / on stop).
+    if (!signal.aborted) {
+      this.heldAnim = anim;
+      this.heldIndex = lastIndex;
+    }
+  }
+
+  /**
+   * Find a frame carrying mouth overlays to use as a speak base when the frame on screen
+   * has none (cycle-8 #2). Prefers a Speaking/rest/idle state's frame, else the first
+   * overlay-bearing frame anywhere. Lazily computed + cached (null = no such frame).
+   */
+  private findOverlayFrame(): FrameModel | undefined {
+    if (this.overlayBaseFrame !== undefined) return this.overlayBaseFrame ?? undefined;
+    const hasOverlays = (f: FrameModel): boolean => (f.mouth?.overlays.length ?? 0) > 0;
+    for (const state of ['Speaking', 'RestPose', 'IdlingLevel1', 'Showing']) {
+      for (const animName of this.model.states[state] ?? []) {
+        const frame = this.animMap.get(animName)?.frames.find(hasOverlays);
+        if (frame) return (this.overlayBaseFrame = frame);
+      }
+    }
+    for (const anim of this.model.animations) {
+      const frame = anim.frames.find(hasOverlays);
+      if (frame) return (this.overlayBaseFrame = frame);
+    }
+    this.overlayBaseFrame = null;
+    return undefined;
   }
 
   /** Walk `anim` back to rest after it finished on frame `lastIndex` (cycle-8 / ADR-0020). */
@@ -373,6 +429,7 @@ class VivifyAgent implements Agent {
         resolve();
         return;
       }
+      this.balloon.show(); // silent path: speech "starts" now (cycle-8 #3)
       const name = animationForState(this.model.states, 'Speaking', this.rng);
       const pb = name ? this.beginPlayback(name) : null;
       let timer: number | null = null;
@@ -450,6 +507,15 @@ class VivifyAgent implements Agent {
     };
     startLoop();
 
+    // Lip-sync composites the mouth overlay onto the frame ON SCREEN. If this character
+    // has no Speaking animation AND the held frame carries no overlays (e.g. a 0-overlay
+    // rest pose), render an overlay-bearing base frame so the mouth still moves — the
+    // pose-preserving case (held frame HAS overlays) is untouched (cycle-8 #2).
+    if (!speakingAnim && this.compositor.currentOverlays().length === 0) {
+      const base = this.findOverlayFrame();
+      if (base) this.compositor.renderFrame(base);
+    }
+
     let handle: AudioHandle | null = null;
     try {
       handle = await this.audio.play(result.audio);
@@ -465,6 +531,7 @@ class VivifyAgent implements Agent {
     }
 
     const audioHandle = handle;
+    this.balloon.show(); // audio has actually started — reveal the balloon now (cycle-8 #3)
     await new Promise<void>((resolve) => {
       let timer: number | null = null;
       let settled = false;
