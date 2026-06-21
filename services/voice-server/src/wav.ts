@@ -82,6 +82,12 @@ export interface TrimOptions {
   threshold?: number;
   /** Consecutive non-silent frames required to mark the audio onset (default 4) — rejects a lone spike. */
   minRun?: number;
+  /**
+   * Keep this many ms of audio BEFORE the detected onset (default 40), so a soft leading
+   * consonant isn't shaved. A small lead-in is imperceptible and aligns WAV t≈0 with the
+   * timeline's first viseme far more safely than trimming flush to the first loud sample.
+   */
+  leadInMs?: number;
 }
 
 /**
@@ -94,6 +100,7 @@ export interface TrimOptions {
 export function trimLeadingSilence(wav: Buffer, opts: TrimOptions = {}): Buffer {
   const threshold = opts.threshold ?? 512;
   const minRun = opts.minRun ?? 4;
+  const leadInMs = opts.leadInMs ?? 40;
   const view = parseWav(wav);
   if (!view || view.bits !== 16) return wav; // only 16-bit PCM is trimmable here
 
@@ -120,10 +127,16 @@ export function trimLeadingSilence(wav: Buffer, opts: TrimOptions = {}): Buffer 
     }
   }
 
-  const fmt: PcmFormat = { rate: rateOf(wav), channels: view.channels, bits: view.bits };
+  const rate = rateOf(wav);
+  const fmt: PcmFormat = { rate, channels: view.channels, bits: view.bits };
   if (onset < 0) return wrapPcmToWav(Buffer.alloc(0), fmt); // all silence
-  if (onset === view.dataStart) return wav; // already starts audible — untouched
-  return wrapPcmToWav(wav.subarray(onset, dataEnd), fmt);
+
+  // Keep a small lead-in before the onset so a soft attack isn't clipped (leadInMs is a
+  // whole number of frames, preserving alignment). Clamp to the start of the data.
+  const leadInBytes = Math.round((leadInMs / 1000) * rate) * frame;
+  const start = Math.max(view.dataStart, onset - leadInBytes);
+  if (start === view.dataStart) return wav; // nothing to trim once the lead-in is kept
+  return wrapPcmToWav(wav.subarray(start, dataEnd), fmt);
 }
 
 /** Read the sample rate from a WAV's fmt chunk (falls back to the default rate). */

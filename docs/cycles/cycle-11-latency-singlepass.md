@@ -41,6 +41,28 @@ The engine already plays the full utterance to the `dummy` null sink during Pass
 - **Honest failure:** empty/below-min capture → loud **500** ("null-sink capture produced no audio"); the
   server never returns a silent WAV. The `{audioWavBase64, mouthTimeline}` contract is otherwise identical.
 
+### Fix: capture-start race (clipped opening audio)
+On-screen, single-pass clipped the **first ~2–3s** of audio, and the returned WAV sizes **varied per
+request** for the same phrase. Root cause: the server spawned `parec` and **immediately** spawned the
+bridge, so synthesis began before `parec` was actually recording — the opening words played to the null
+sink before the recorder had its first sample, and were simply lost.
+
+Fix (`src/server.ts`, `src/wav.ts`):
+- **Capture-readiness gate.** Synthesis is now gated on the capture's **first sample**: the server starts
+  `parec`, waits until its stdout produces a byte (proof the null-sink monitor is open and flowing), and
+  only **then** spawns the bridge. The first sample drives a `captureReady` promise; the elapsed time is
+  recorded as `captureReadyMs`.
+- **Fast gate, low added latency.** `DEFAULT_CAPTURE` now uses `parec --latency-msec=30` so the first
+  fragment flushes in tens of ms, and the null sink never suspends (its monitor streams immediately), so
+  the gate resolves quickly rather than adding meaningful latency.
+- **`trimLeadingSilence` lead-in guard.** A `leadInMs` option (default **40ms**) keeps a small margin of
+  audio *before* the detected onset, so the trim can't shave a soft leading consonant. The lead-in is a
+  whole number of frames, preserving alignment; t≈0 still maps to the timeline's first viseme.
+- **Honest failure.** If the capture never goes live within `captureReadyTimeoutMs` (default **5000**, env
+  `VIVIFY_CAPTURE_READY_MS`) — or `parec` dies before producing a sample — `/tts` returns a loud **500**
+  rather than a clipped or faked WAV.
+- **Timing.** `[tts-timing]` now includes `captureReady=` (the gate paid before synthesis).
+
 ## WIN 2 — locate + close the gap
 The gap is wall-time inside the child's lifetime but **outside** `main()`'s self-measured window: Wine
 process **load** (spawn→main) and **teardown** (after the timing print → exit: COM/DLL unload, device
@@ -70,7 +92,10 @@ No Wine/PulseAudio in the dev sandbox, so these come from the user's `docker run
 | Pass A total | ~2912ms | _tbd_ | the inherent real-time floor (unchanged) |
 | Pass B total | ~2853ms | **removed** | killed by single-pass capture |
 | gap (load/teardown) | ~2170ms | _tbd_ | `_exit` closes teardown; `wineLoadMs` is the residual |
+| capture-start clip | first ~2–3s lost; varying WAV sizes | **fixed** | gate on first captured sample before synthesis; sizes consistent |
 | **`[tts-timing]` total** | **~7960ms** | _tbd_ | target: toward Pass A floor + small overhead |
+
+`[tts-timing]` now reports `captureReady=` — the readiness gate paid before synthesis starts.
 
 ## What is verified where
 - **CI (this repo, no Wine/PA):** `wrapPcmToWav` + `trimLeadingSilence` unit tests; a server test with an
@@ -78,8 +103,11 @@ No Wine/PulseAudio in the dev sandbox, so these come from the user's `docker run
   valid RIFF/WAVE response built from the capture, aligned timeline, and the empty-capture → 500 path.
   `pnpm -r typecheck && pnpm -r test && pnpm lint && pnpm format` green.
 - **Operator (rebuild + curl/Speak):** `[tts-timing] total` drops substantially toward the ~2900ms floor;
-  the WAV is valid RIFF/WAVE and plays; lip-sync stays dense + aligned in MASH. If capture yields no/garbled
-  audio or lip-sync drifts → STOP + report (don't paper over it). Numbers fill the table above.
+  the WAV is valid RIFF/WAVE and plays; the **full phrase is audible from the first word** (no clipped
+  opening); **WAV sizes are consistent across requests** for the same phrase; `captureReady=` appears in
+  `[tts-timing]`; lip-sync stays dense + aligned in MASH. If capture yields no/garbled audio, the opening is
+  clipped, sizes vary, or lip-sync drifts → STOP + report (don't paper over it). Numbers fill the table
+  above.
 
 ## Non-goals / known limitations
 Persistent-engine bridge daemon (report the residual `wineLoadMs`, defer). Forced parallel passes (moot

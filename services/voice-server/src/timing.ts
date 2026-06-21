@@ -59,6 +59,8 @@ export interface TtsTiming {
    * WIN 2) a persistent-engine daemon would remove.
    */
   wineLoadMs: number;
+  /** Capture readiness gate (Cycle 11 fix): parec spawn → its first sample, paid before synthesis. */
+  captureReadyMs: number;
   /** Recording the null-sink monitor (parec) — runs concurrently with the bridge. */
   captureMs: number;
   /** Building the WAV from captured PCM (wrap + trim) + base64 encode for the response. */
@@ -86,7 +88,8 @@ export function formatTtsTiming(t: TtsTiming): string {
       ? `wineLoad=${t.wineLoadMs}`
       : `wineLoad=${t.wineLoadMs} teardown=${teardownMs}`;
   return (
-    `total=${t.totalMs}ms (bridgeWall=${t.bridgeMs} ${gapPart} capture=${t.captureMs} encode=${t.encodeMs}) ` +
+    `total=${t.totalMs}ms (captureReady=${t.captureReadyMs} bridgeWall=${t.bridgeMs} ${gapPart} ` +
+    `capture=${t.captureMs} encode=${t.encodeMs}) ` +
     bridgePart
   );
 }

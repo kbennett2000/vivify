@@ -59,9 +59,19 @@ real-time pass: it plays the utterance to the PulseAudio null sink and emits the
 timeline. The server captures the audio by recording that sink's `.monitor` with `parec`
 **concurrently** with the pass, so one synthesis produces both the events and the audio.
 
+Synthesis is **gated on the capture actually streaming**: the server starts `parec`, waits for
+its first captured sample (proof the null-sink monitor is open and flowing), and only then spawns
+the bridge. This closes a capture-start race that otherwise clipped the opening words — the bridge
+used to begin before `parec` was recording, so the first audio was lost.
+
 - `VIVIFY_CAPTURE` (injectable; default
-  `parec --device=dummy.monitor --format=s16le --rate=44100 --channels=1`) — the command the
-  server starts before spawning the bridge and stops (SIGTERM) after it exits.
+  `parec --device=dummy.monitor --format=s16le --rate=44100 --channels=1 --latency-msec=30`) — the
+  command the server starts before spawning the bridge and stops (SIGTERM) after it exits.
+  `--latency-msec=30` makes `parec` flush its first fragment fast, so the readiness gate resolves
+  quickly.
+- `VIVIFY_CAPTURE_READY_MS` (default `5000`) — how long to wait for that first captured sample
+  before failing. If the null-sink monitor never streams within this window, `/tts` returns **500**
+  rather than a clipped WAV.
 - `VIVIFY_CAPTURE_GRACE_MS` (default `200`) — how long after the bridge exits the server keeps
   capturing, so the audio tail isn't clipped.
 - The null sink's format is **pinned** (`s16le` / 44100 / mono in `pulse-null.pa`) so the
@@ -75,17 +85,18 @@ faked silent WAV.
 
 **Per-request timing.** Every `POST /tts` logs a `[tts-timing]` line combining the server
 stages with the bridge's own per-stage `[timing]` line. Stages:
+- `captureReady` — the capture-readiness gate: `parec` start → its first captured sample, paid
+  before synthesis begins (the fix for the clipped-opening race).
 - `wineLoad` — the Wine process-load prologue: child spawn → the bridge's `[boot]` (its first
   statement in `main()`). This is the residual structural cost; a persistent-engine bridge
   daemon would remove it (future work — not done here).
-- `capture` — server-side null-sink capture wall time (`parec` start → stop, incl. the grace
-  tail).
+- `capture` — `parec` wall time: the null-sink recording (start → stop, incl. the grace tail);
+  runs concurrently with the bridge.
 - `teardown` — the time after the bridge's timing print until the process exits, now closed by
   the bridge's fast `_Exit` (it skips COM/DLL unload + device drain; the OS reclaims them).
 - `bridge[init=… passA=…(ttfb …) write=… self=…]` — the bridge's own sub-parts: engine COM
   init, the single real-time pass (with time-to-first-byte), timeline write, and the bridge's
   self-measured `main()` window. (There is **no** `passB`.)
-- `capture` — `parec` wall time (the null-sink recording; runs concurrently with the bridge).
 - `encode` — server-side: wrapping the captured PCM into a WAV (+ leading-silence trim) and
   base64-encoding it for the response.
 - `total` — whole handler.

@@ -29,6 +29,8 @@ export interface ServerOptions {
   captureCommand?: string;
   /** Cycle 11: ms to keep recording after the bridge exits, so the audio tail isn't clipped. */
   captureGraceMs?: number;
+  /** Cycle 11 fix: fail if the capture hasn't produced its first sample within this many ms. */
+  captureReadyTimeoutMs?: number;
   /** Cap on request body size (bytes). */
   maxBodyBytes?: number;
   /** Kill the bridge + fail the request if it runs longer than this (ms). */
@@ -43,11 +45,16 @@ export interface ServerOptions {
 // via VIVIFY_SAPI4_BRIDGE.
 const DEFAULT_BRIDGE = process.env.VIVIFY_SAPI4_BRIDGE ?? 'wine /opt/vivify/bridge/sapi4-mouth.exe';
 // Cycle 11: record the null sink's monitor as raw PCM (s16le/44100/mono — matches the pinned
-// null-sink format in pulse-null.pa, so no resampling). Overridable via VIVIFY_CAPTURE.
+// null-sink format in pulse-null.pa, so no resampling). `--latency-msec=30` makes parec flush
+// small fragments immediately, so its first sample arrives in ~tens of ms and the capture-ready
+// gate (below) adds little latency. Overridable via VIVIFY_CAPTURE.
 const DEFAULT_CAPTURE =
   process.env.VIVIFY_CAPTURE ??
-  'parec --device=dummy.monitor --format=s16le --rate=44100 --channels=1';
+  'parec --device=dummy.monitor --format=s16le --rate=44100 --channels=1 --latency-msec=30';
 const DEFAULT_CAPTURE_GRACE = Number(process.env.VIVIFY_CAPTURE_GRACE_MS ?? 200);
+// Cycle 11 fix: synthesis is gated on the capture actually streaming; if parec produces no
+// sample within this window the request fails loudly (no clipped/faked audio). Overridable.
+const DEFAULT_CAPTURE_READY = Number(process.env.VIVIFY_CAPTURE_READY_MS ?? 5_000);
 const DEFAULT_MAX_BODY = 1_000_000;
 const DEFAULT_BRIDGE_TIMEOUT = Number(process.env.VIVIFY_SAPI4_TIMEOUT_MS ?? 120_000);
 
@@ -92,17 +99,20 @@ interface SynthResult {
   bridgeMs: number;
   /** spawn → the bridge's first stderr byte (`[boot]`) ≈ the Wine process-load prologue, ms. */
   wineLoadMs: number;
-  /** Capture (parec) wall time — runs concurrently with the bridge, ms. */
+  /** Capture (parec) spawn → its first PCM sample — the readiness gate paid before synthesis, ms. */
+  captureReadyMs: number;
+  /** Capture (parec) wall time, ms. */
   captureMs: number;
 }
 
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * One real-time synthesis pass. Starts the capture (records the null-sink monitor → raw PCM
- * on stdout), runs the single-pass bridge (which plays the utterance to that sink and writes
- * the dense timeline), then stops the capture and wraps the PCM into an aligned WAV. The
- * capture is always torn down (no leaked recorder), even when the bridge fails.
+ * One real-time synthesis pass. Starts the capture (records the null-sink monitor → raw PCM on
+ * stdout) and WAITS until it's actually streaming before triggering synthesis, so the opening
+ * audio can't be clipped by a capture-start race. Then runs the single-pass bridge (which plays
+ * the utterance to that sink and writes the dense timeline), stops the capture, and wraps the
+ * PCM into an aligned WAV. The capture is always torn down (no leaked recorder), even on failure.
  */
 async function synthesize(
   bridgeCommand: string,
@@ -111,10 +121,11 @@ async function synthesize(
   voice: VoiceConfig,
   timeoutMs: number,
   graceMs: number,
+  readyMs: number,
 ): Promise<SynthResult> {
   const dir = await mkdtemp(join(tmpdir(), 'vivify-tts-'));
 
-  // --- start the capture FIRST so we don't clip the start of playback ---
+  // --- start the capture FIRST and gate synthesis on it actually streaming ---
   const capParts = captureCommand.split(/\s+/).filter(Boolean);
   const capProgram = capParts[0];
   if (!capProgram) throw new Error('voice-server: empty capture command');
@@ -122,14 +133,55 @@ async function synthesize(
   const capture = spawn(capProgram, capParts.slice(1), { stdio: ['ignore', 'pipe', 'pipe'] });
   const pcmChunks: Buffer[] = [];
   let captureErr = '';
-  capture.stdout?.on('data', (chunk: Buffer) => pcmChunks.push(chunk));
+  // Resolves on the FIRST captured sample (proof the null-sink monitor is open and flowing);
+  // rejects if no sample arrives within `readyMs` or the recorder dies first — a loud, honest
+  // failure rather than a clipped/silent WAV. The same handler collects every chunk.
+  let markReady: () => void;
+  let failReady: (err: Error) => void;
+  const captureReady = new Promise<void>((resolve, reject) => {
+    markReady = resolve;
+    failReady = reject;
+  });
+  // The real consumer is `await captureReady` below; this no-op handler just prevents an
+  // unhandled-rejection warning if it rejects during the async gap before that await.
+  void captureReady.catch(() => {});
+  let captureLive = false;
+  const readyTimer = setTimeout(() => {
+    failReady(
+      new Error(
+        `null-sink capture produced no sample within ${readyMs}ms — is the PulseAudio null sink ` +
+          `live and streaming to its monitor? (parec: ${captureErr.trim().slice(0, 200) || 'no stderr'})`,
+      ),
+    );
+  }, readyMs);
+  readyTimer.unref?.();
+  capture.stdout?.on('data', (chunk: Buffer) => {
+    pcmChunks.push(chunk);
+    if (!captureLive) {
+      captureLive = true;
+      clearTimeout(readyTimer);
+      markReady();
+    }
+  });
   capture.stderr?.on('data', (chunk) => {
     captureErr += String(chunk);
   });
-  // Resolve on close OR error (spawn ENOENT emits 'error' without 'close').
+  // Resolve on close OR error (spawn ENOENT emits 'error' without 'close'). If the recorder dies
+  // before producing a sample, fail the readiness gate too (don't wait out the whole timeout).
   const captureClosed = new Promise<void>((resolve) => {
-    capture.on('close', () => resolve());
-    capture.on('error', () => resolve());
+    const onEnd = (): void => {
+      if (!captureLive) {
+        clearTimeout(readyTimer);
+        failReady(
+          new Error(
+            `capture process exited before producing audio (parec: ${captureErr.trim().slice(0, 200) || 'no stderr'})`,
+          ),
+        );
+      }
+      resolve();
+    };
+    capture.on('close', onEnd);
+    capture.on('error', onEnd);
   });
   let captureStopped = false;
   const stopCapture = async (): Promise<void> => {
@@ -153,6 +205,11 @@ async function synthesize(
     const textPath = join(dir, 'in.txt');
     const timelinePath = join(dir, 'out.json');
     await writeFile(textPath, text, 'utf8');
+
+    // GATE: don't synthesize until the capture is provably streaming, so the opening words
+    // can't be lost to a capture-start race. (Throws → 500 if the capture never goes live.)
+    await captureReady;
+    const captureReadyMs = Date.now() - tCapture;
 
     const parts = bridgeCommand.split(/\s+/).filter(Boolean);
     const program = parts[0];
@@ -218,7 +275,7 @@ async function synthesize(
     }
 
     const timeline: unknown = JSON.parse(await readFile(timelinePath, 'utf8'));
-    return { wav, timeline, stderr, bridgeMs, wineLoadMs, captureMs };
+    return { wav, timeline, stderr, bridgeMs, wineLoadMs, captureReadyMs, captureMs };
   } finally {
     await stopCapture(); // backstop: never leak parec, even on the bridge-failure path
     await rm(dir, { recursive: true, force: true });
@@ -244,6 +301,7 @@ export function createVoiceServer(opts: ServerOptions = {}): Server {
   const bridgeCommand = opts.bridgeCommand ?? DEFAULT_BRIDGE;
   const captureCommand = opts.captureCommand ?? DEFAULT_CAPTURE;
   const captureGraceMs = opts.captureGraceMs ?? DEFAULT_CAPTURE_GRACE;
+  const captureReadyTimeoutMs = opts.captureReadyTimeoutMs ?? DEFAULT_CAPTURE_READY;
   const maxBodyBytes = opts.maxBodyBytes ?? DEFAULT_MAX_BODY;
   const bridgeTimeoutMs = opts.bridgeTimeoutMs ?? DEFAULT_BRIDGE_TIMEOUT;
 
@@ -274,14 +332,16 @@ export function createVoiceServer(opts: ServerOptions = {}): Server {
             sendJson(res, 400, { error: 'field "text" (non-empty string) is required' }, cors);
             return;
           }
-          const { wav, timeline, stderr, bridgeMs, wineLoadMs, captureMs } = await synthesize(
-            bridgeCommand,
-            captureCommand,
-            parsed.text,
-            parsed.voice ?? {},
-            bridgeTimeoutMs,
-            captureGraceMs,
-          );
+          const { wav, timeline, stderr, bridgeMs, wineLoadMs, captureReadyMs, captureMs } =
+            await synthesize(
+              bridgeCommand,
+              captureCommand,
+              parsed.text,
+              parsed.voice ?? {},
+              bridgeTimeoutMs,
+              captureGraceMs,
+              captureReadyTimeoutMs,
+            );
           const mouthTimeline = parseTimeline(timeline);
           const tEncode = Date.now();
           const audioWavBase64 = wav.toString('base64');
@@ -293,6 +353,7 @@ export function createVoiceServer(opts: ServerOptions = {}): Server {
           const timing: TtsTiming = {
             bridgeMs,
             wineLoadMs,
+            captureReadyMs,
             captureMs,
             encodeMs,
             totalMs: Date.now() - tReq,

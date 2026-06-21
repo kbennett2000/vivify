@@ -83,6 +83,7 @@ describe('formatTtsTiming', () => {
     const t: TtsTiming = {
       bridgeMs: 2300,
       wineLoadMs: 200,
+      captureReadyMs: 45,
       captureMs: 2100,
       encodeMs: 2,
       totalMs: 2310,
@@ -98,7 +99,8 @@ describe('formatTtsTiming', () => {
 
     // Grand total.
     expect(out).toContain('total=2310ms');
-    // Server stages.
+    // Server stages (Cycle 11 fix adds the capture-readiness gate).
+    expect(out).toContain('captureReady=45');
     expect(out).toContain('bridgeWall=2300');
     expect(out).toContain('wineLoad=200');
     expect(out).toContain('capture=2100');
@@ -116,6 +118,7 @@ describe('formatTtsTiming', () => {
     const t: TtsTiming = {
       bridgeMs: 1000,
       wineLoadMs: 100,
+      captureReadyMs: 30,
       captureMs: 900,
       encodeMs: 1,
       totalMs: 1010,
@@ -135,6 +138,7 @@ describe('formatTtsTiming', () => {
     const t: TtsTiming = {
       bridgeMs: 2300,
       wineLoadMs: 200,
+      captureReadyMs: 45,
       captureMs: 2100,
       encodeMs: 2,
       totalMs: 2310,
@@ -143,6 +147,7 @@ describe('formatTtsTiming', () => {
     const out = formatTtsTiming(t);
     expect(out).toContain('bridge[timing unavailable]');
     expect(out).toContain('total=2310ms');
+    expect(out).toContain('captureReady=45');
     expect(out).toContain('bridgeWall=2300');
     expect(out).toContain('wineLoad=200');
     expect(out).toContain('capture=2100');

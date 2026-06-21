@@ -6,5 +6,8 @@ load-module module-native-protocol-unix auth-anonymous=1 socket=/tmp/pulse-socke
 # Cycle 11: pin the sink format so its `.monitor` source is deterministic — the server
 # records it with `parec --format=s16le --rate=44100 --channels=1` for the single-pass WAV,
 # and a matching format means no resampling guesswork (see docs/cycles/cycle-11-latency-singlepass.md).
+# We load NO module-suspend-on-idle, so this sink never suspends — its monitor streams continuous
+# silence the moment `parec` connects. That's what lets the server's capture-readiness gate resolve
+# fast (first sample in ~tens of ms) instead of deadlocking until audio plays.
 load-module module-null-sink sink_name=dummy format=s16le rate=44100 channels=1 sink_properties=device.description=dummy_output
 set-default-sink dummy

@@ -66,7 +66,14 @@ describe('wrapPcmToWav', () => {
 });
 
 describe('trimLeadingSilence', () => {
-  it('removes leading silent frames so the first sample is the audible onset', () => {
+  // NOTE (Cycle 11 fix): the DEFAULT leadInMs is now 40, which at 44100 Hz is
+  // round(0.040 * 44100) = 1764 frames of lead-in kept before the onset. The
+  // flush-to-onset behavior these first tests assert therefore requires an explicit
+  // `leadInMs: 0`; otherwise the tiny (few-frame) leading silence here is well inside
+  // the lead-in window and nothing would be trimmed. The lead-in guard itself gets its
+  // own dedicated tests further down (with a rate that makes the ms→frame math exact).
+
+  it('with leadInMs:0, removes leading silent frames so the first sample is the audible onset', () => {
     // 5 silent frames (value 0) then 8 loud frames (value 8000), 16-bit mono.
     const silentFrames = 5;
     const loudFrames = 8;
@@ -76,7 +83,7 @@ describe('trimLeadingSilence', () => {
     ];
     const wav = wrapPcmToWav(pcm16(samples));
 
-    const trimmed = trimLeadingSilence(wav);
+    const trimmed = trimLeadingSilence(wav, { leadInMs: 0 });
 
     // Still a valid RIFF/WAVE.
     expect(trimmed.toString('ascii', 0, 4)).toBe('RIFF');
@@ -92,7 +99,7 @@ describe('trimLeadingSilence', () => {
     expect(trimmed.readInt16LE(44)).toBe(8000);
   });
 
-  it('requires a run: a lone spike in silence is not the onset, the sustained tone is', () => {
+  it('with leadInMs:0, requires a run: a lone spike in silence is not the onset, the sustained tone is', () => {
     // silence(5), one loud spike(1), silence(5), sustained tone(6). With the default
     // minRun=4, the lone spike is rejected; onset is the sustained run.
     const samples = [
@@ -103,7 +110,7 @@ describe('trimLeadingSilence', () => {
     ];
     const wav = wrapPcmToWav(pcm16(samples));
 
-    const trimmed = trimLeadingSilence(wav);
+    const trimmed = trimLeadingSilence(wav, { leadInMs: 0 });
 
     // Trimmed to the sustained tone only: 6 frames * 2 bytes.
     expect(trimmed.readUInt32LE(40)).toBe(6 * 2);
@@ -125,12 +132,86 @@ describe('trimLeadingSilence', () => {
     expect(trimmed.toString('ascii', 8, 12)).toBe('WAVE');
   });
 
-  it('returns audio that already starts audible unchanged', () => {
-    // A run of loud frames from the very first sample — nothing to trim.
+  it('returns audio that already starts audible unchanged (default opts)', () => {
+    // A run of loud frames from the very first sample — nothing to trim regardless of
+    // the lead-in, so the default opts return the input verbatim.
     const wav = wrapPcmToWav(pcm16([8000, 8000, 8000, 8000, 8000, 8000]));
     const trimmed = trimLeadingSilence(wav);
 
     expect(trimmed.length).toBe(wav.length);
     expect(trimmed.equals(wav)).toBe(true);
+  });
+
+  describe('leadInMs guard (keeps frames before the onset so a soft attack is not clipped)', () => {
+    // Build a 16-bit mono WAV at rate 1000 so the ms→frames math is exact:
+    // 1000 frames/sec ⇒ 1ms = 1 frame, so leadInMs=40 ⇒ 40 frames = 80 bytes.
+    const RATE = 1000;
+    const FMT = { rate: RATE, channels: 1, bits: 16 };
+
+    /** silentFrames of 0 then toneFrames of 8000, wrapped at RATE. */
+    function silenceThenTone(silentFrames: number, toneFrames: number): Buffer {
+      const samples = [
+        ...Array<number>(silentFrames).fill(0),
+        ...Array<number>(toneFrames).fill(8000),
+      ];
+      return wrapPcmToWav(pcm16(samples), FMT);
+    }
+
+    it('keeps exactly leadInMs worth of frames before the onset', () => {
+      // 200 silent frames then a sustained tone. onset frame index = 200.
+      // leadInMs=40 @1000Hz ⇒ 40 frames lead-in ⇒ start frame = 200 − 40 = 160.
+      // Surviving frames = totalFrames − 160 = (totalFrames − 200 + 40).
+      const silentFrames = 200;
+      const toneFrames = 500;
+      const totalFrames = silentFrames + toneFrames;
+      const wav = silenceThenTone(silentFrames, toneFrames);
+
+      const trimmed = trimLeadingSilence(wav, { leadInMs: 40 });
+
+      // Valid RIFF/WAVE with the sample rate preserved.
+      expect(trimmed.toString('ascii', 0, 4)).toBe('RIFF');
+      expect(trimmed.toString('ascii', 8, 12)).toBe('WAVE');
+      expect(trimmed.readUInt32LE(24)).toBe(RATE); // fmt sampleRate preserved
+
+      // 40 of the 200 silent frames are kept ⇒ data length = (totalFrames − 200 + 40) * 2.
+      const expectedFrames = totalFrames - silentFrames + 40; // = totalFrames − 160
+      const expectedData = expectedFrames * 2;
+      expect(trimmed.readUInt32LE(40)).toBe(expectedData); // data chunk size
+      expect(trimmed.readUInt32LE(4)).toBe(36 + expectedData); // RIFF size
+      expect(trimmed.length).toBe(44 + expectedData);
+
+      // The first kept sample is from the silence (start frame 160 < onset 200): value 0,
+      // and the onset tone appears exactly 40 frames (80 bytes) in.
+      expect(trimmed.readInt16LE(44)).toBe(0); // start of the kept lead-in
+      expect(trimmed.readInt16LE(44 + 40 * 2)).toBe(8000); // onset, 40 frames later
+    });
+
+    it('leadInMs:0 reproduces flush-to-onset (no lead-in)', () => {
+      const silentFrames = 200;
+      const toneFrames = 500;
+      const wav = silenceThenTone(silentFrames, toneFrames);
+
+      const trimmed = trimLeadingSilence(wav, { leadInMs: 0 });
+
+      // All leading silence removed: only the audible portion remains.
+      const expectedData = toneFrames * 2;
+      expect(trimmed.readUInt32LE(40)).toBe(expectedData);
+      expect(trimmed.length).toBe(44 + expectedData);
+      expect(trimmed.readInt16LE(44)).toBe(8000); // first sample is the onset
+    });
+
+    it('clamps the lead-in at the data start and returns the input unchanged when nothing is trimmed', () => {
+      // onset at frame 10 with leadInMs=40 (⇒ 40 frames) would put the start at frame
+      // −30, which clamps to 0. Since the start lands at the data start, nothing is
+      // trimmed and the function returns the input buffer verbatim.
+      const silentFrames = 10;
+      const toneFrames = 500;
+      const wav = silenceThenTone(silentFrames, toneFrames);
+
+      const trimmed = trimLeadingSilence(wav, { leadInMs: 40 });
+
+      expect(trimmed.length).toBe(wav.length);
+      expect(trimmed.equals(wav)).toBe(true);
+    });
   });
 });
