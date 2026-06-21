@@ -14,6 +14,9 @@ const continuousCapturePath = fileURLToPath(
 );
 const continuousCommand = `node ${continuousCapturePath}`;
 
+const emptyCapturePath = fileURLToPath(new URL('./fake-capture-empty.mjs', import.meta.url));
+const emptyCommand = `node ${emptyCapturePath}`;
+
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 describe('CaptureSource (persistent reader, windowed per request)', () => {
@@ -105,5 +108,53 @@ describe('CaptureSource (persistent reader, windowed per request)', () => {
     expect(source.isLive()).toBe(true);
     source.stop();
     expect(source.isLive()).toBe(false);
+  });
+});
+
+describe('whenLive (Cycle 11 follow-up: gate the startup warmup on a real first sample)', () => {
+  // Track every source so a failing assertion can't leak a child process.
+  let sources: CaptureSource[] = [];
+  const make = (command: string, respawn = false): CaptureSource => {
+    const s = new CaptureSource({ command, respawn });
+    sources.push(s);
+    return s;
+  };
+
+  afterEach(() => {
+    for (const s of sources) s.stop();
+    sources = [];
+  });
+
+  it('resolves true once the reader produces its first PCM sample (continuous fake streams immediately)', async () => {
+    const source = make(continuousCommand);
+    source.start();
+    await expect(source.whenLive(2000)).resolves.toBe(true);
+  });
+
+  it('resolves true IMMEDIATELY (<100ms) when already live (a second whenLive after the first)', async () => {
+    const source = make(continuousCommand);
+    source.start();
+    // First call waits for the reader's first sample → live.
+    await expect(source.whenLive(2000)).resolves.toBe(true);
+
+    // Second call: the source is already live, so it must resolve true fast — without
+    // waiting for another sample or the timeout. Measure the wall time to prove it.
+    const t0 = Date.now();
+    await expect(source.whenLive(2000)).resolves.toBe(true);
+    expect(Date.now() - t0).toBeLessThan(100);
+  });
+
+  it('resolves false after timeoutMs when no sample ever arrives (never-emitting fake)', async () => {
+    const source = make(emptyCommand);
+    source.start();
+    // fake-capture-empty writes nothing to stdout, so the reader never goes live.
+    const t0 = Date.now();
+    const live = await source.whenLive(150);
+    const elapsedMs = Date.now() - t0;
+
+    expect(live).toBe(false); // timed out, not live
+    // It waited out (roughly) the timeout — not instant, not a hang.
+    expect(elapsedMs).toBeGreaterThanOrEqual(140);
+    expect(elapsedMs).toBeLessThan(1000);
   });
 });

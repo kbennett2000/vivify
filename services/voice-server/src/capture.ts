@@ -41,6 +41,8 @@ export class CaptureSource {
   private stopped = false;
   private stderr = '';
   private respawns = 0; // consecutive respawns without going live (drives backoff)
+  private live = false; // has the reader produced any sample yet?
+  private liveWaiters: Array<() => void> = []; // resolved when `live` first becomes true
   private readonly command: string;
   private readonly readyTimeoutMs: number;
   private readonly respawn: boolean;
@@ -60,9 +62,8 @@ export class CaptureSource {
     const proc = spawn(program, parts.slice(1), { stdio: ['ignore', 'pipe', 'pipe'] });
     this.proc = proc;
 
-    let live = false;
     const readyTimer = setTimeout(() => {
-      if (!live)
+      if (!this.live)
         console.warn(
           `[capture] no sample within ${this.readyTimeoutMs}ms — is the null sink live and ` +
             `streaming to its monitor? (parec: ${this.stderr.trim().slice(0, 200) || 'no stderr'})`,
@@ -71,11 +72,14 @@ export class CaptureSource {
     readyTimer.unref?.();
 
     proc.stdout?.on('data', (chunk: Buffer) => {
-      if (!live) {
-        live = true;
+      if (!this.live) {
+        this.live = true;
         this.respawns = 0; // a healthy reader resets the backoff
         clearTimeout(readyTimer);
         console.log('[capture] persistent monitor reader is live');
+        const waiters = this.liveWaiters;
+        this.liveWaiters = [];
+        for (const w of waiters) w();
       }
       if (this.capturing) {
         if (this.windowFirstByteAt === 0) this.windowFirstByteAt = Date.now();
@@ -88,7 +92,10 @@ export class CaptureSource {
 
     const onEnd = (): void => {
       clearTimeout(readyTimer);
-      if (this.proc === proc) this.proc = null;
+      if (this.proc === proc) {
+        this.proc = null;
+        this.live = false; // a new spawn must prove itself live again before `whenLive` resolves
+      }
       if (this.stopped || !this.respawn) return;
       // Exponential backoff capped at 5s so a genuinely-dead monitor (bad command, sink never
       // enumerable) doesn't respawn in a tight loop; escalate the log past a few failures so it's
@@ -129,9 +136,34 @@ export class CaptureSource {
     this.chunks = [];
   }
 
-  /** Is the reader process currently alive? */
+  /** Is the reader process currently alive (point-in-time)? */
   isLive(): boolean {
     return this.proc !== null;
+  }
+
+  /**
+   * Resolve `true` once the reader has actually produced a PCM sample (the monitor is streaming),
+   * or `false` after `timeoutMs` (best-effort — never hangs). Used to gate the startup warmup so it
+   * runs a real, non-empty capture window instead of racing the reader's connect. Resolves
+   * immediately if already live.
+   */
+  whenLive(timeoutMs: number): Promise<boolean> {
+    if (this.live) return Promise.resolve(true);
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        resolve(false);
+      }, timeoutMs);
+      timer.unref?.();
+      this.liveWaiters.push(() => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(true);
+      });
+    });
   }
 
   /** Stop the reader for good (server shutdown). */

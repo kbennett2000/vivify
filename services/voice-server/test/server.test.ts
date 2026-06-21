@@ -7,7 +7,7 @@
 
 import { fileURLToPath } from 'node:url';
 import type { Server } from 'node:http';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createVoiceServer, warmUp } from '../src/server.js';
 import type { TtsTiming } from '../src/timing.js';
 
@@ -525,6 +525,72 @@ describe('warmUp (Cycle 11 follow-up: prime the pipeline, best-effort)', () => {
         captureReadyTimeoutMs,
       }),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe('voice-server startup warmup waits for the reader', () => {
+  // Cycle 11 follow-up: the startup warmup must AWAIT source.whenLive(...) (inside the
+  // serialize mutex) BEFORE running the warmup synthesize — otherwise it fires immediately
+  // after source.start() and races the reader (empty window → `[warmup] failed`). With the
+  // continuous fake (which streams immediately) whenLive resolves and the warmup must
+  // actually RUN and COMPLETE: a `[warmup] done` line, with NO `[warmup] skipped` /
+  // `[warmup] failed … reader not live` line.
+  let server: Server | undefined;
+  let logSpy: ReturnType<typeof vi.spyOn> | undefined;
+  let warnSpy: ReturnType<typeof vi.spyOn> | undefined;
+  const lines: string[] = [];
+
+  afterEach(async () => {
+    if (server) {
+      await closeServer(server);
+      server = undefined;
+    }
+    logSpy?.mockRestore();
+    warnSpy?.mockRestore();
+  });
+
+  it('runs the warmup synth once the persistent reader is live (no skip / no reader-not-live failure)', async () => {
+    const collect = (...args: unknown[]): void => {
+      lines.push(args.map((a) => String(a)).join(' '));
+    };
+    // Spy BEFORE creating the server so we capture the warmup's logs, which fire on the
+    // background mutex chain kicked off inside createVoiceServer().
+    logSpy = vi.spyOn(console, 'log').mockImplementation(collect);
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(collect);
+
+    server = createVoiceServer({
+      bridgeCommand: `node ${fakeBridgePath}`,
+      captureCommand: `node ${continuousCapturePath}`,
+      captureGraceMs: 20,
+      captureReadyTimeoutMs: 2000,
+      captureRespawn: false,
+      warmOnStart: true,
+    });
+    // Listen on an ephemeral port so afterEach's closeServer() has a running server to close
+    // (which also tears the persistent capture reader down). The warmup runs regardless of
+    // listen(); we don't send any request — we only observe its logs.
+    await listenOnEphemeralPort(server);
+
+    // Poll the captured logs (bounded ~4s) for the terminal `[warmup]` line. The warmup is
+    // a best-effort background chain, so we wait for it to settle deterministically rather
+    // than racing a fixed sleep.
+    const isTerminal = (line: string): boolean =>
+      line.includes('[warmup] done') ||
+      line.includes('[warmup] failed') ||
+      line.includes('[warmup] skipped');
+    const deadline = Date.now() + 4000;
+    while (!lines.some(isTerminal) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
+    // The warmup COMPLETED: a `[warmup] done` line is present...
+    expect(lines.some((l) => l.includes('[warmup] done'))).toBe(true);
+    // ...and it neither skipped (reader-not-live) nor failed on a not-live reader. (The
+    // continuous fake streams immediately, so whenLive resolved and the synth ran.)
+    expect(lines.some((l) => l.includes('[warmup] skipped'))).toBe(false);
+    expect(lines.some((l) => l.includes('[warmup] failed'))).toBe(false);
+    // The warmup also logs its own audio metric, proving the synth actually ran (not skipped).
+    expect(lines.some((l) => l.includes('[warmup tts-audio]'))).toBe(true);
   });
 });
 

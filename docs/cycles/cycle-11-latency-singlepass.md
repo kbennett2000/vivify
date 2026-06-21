@@ -117,6 +117,23 @@ Fix (two parts):
   per-request `parec` always connects to a **hot** monitor (no cold-start clip; smaller `captureReady`).
   Multiple monitor readers fan out, so this doesn't disturb the per-request capture; output is discarded.
 
+### Fix: the warmup was racing the reader (it never actually warmed)
+Even after the persistent `CaptureSource` landed, the first Speak still clipped — and the operator log
+showed `[warmup] failed … reader not live` printing BEFORE `[capture] … is live`. Found by diff:
+`createVoiceServer` fired the warmup synthesis the instant after `source.start()`, with **no wait** for the
+persistent `parec` to actually be streaming → the warmup's window was empty → it threw and no-op'd, so the
+cold first window was paid by the user's first real Speak.
+
+Fix: `CaptureSource.whenLive(timeoutMs)` resolves once the reader has produced its first PCM sample (or
+`false` on timeout). The startup warmup now `await source.whenLive(…)` **inside the serialize mutex** before
+synthesizing — so it opens a real, non-empty window, and the first real `/tts` queues behind it. The
+ordering is instrumented so the operator can SEE it: `[warmup] awaiting capture reader…` →
+`[warmup] reader live after Nms — priming…` → `[warmup tts-audio] wavMs=… rawCaptureMs=…` → `[warmup] done`
+(or `[warmup] skipped — reader not live within …ms`). **Honest open question this surfaces:** if the
+null-sink monitor only streams *while audio plays* (not when idle), `whenLive` can't resolve before a
+playback and the log reads `[warmup] skipped` — which would prove a *priming read/write* (keep the sink
+running independent of a request) is the real fix. The instrumentation tells us which, without guessing.
+
 Honest caveat: if a residual clip is **bridge-side** (winepulse playback cold-start on the playback side,
 not the capture side), the `[tts-audio]` `wavMs ≪ timelineMs` metric will surface it, and the full-pipeline
 `warmUp` covers that side.

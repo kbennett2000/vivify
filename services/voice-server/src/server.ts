@@ -408,19 +408,45 @@ export function createVoiceServer(opts: ServerOptions = {}): Server {
   // Tear the persistent reader down with the server (no leaked parec across test runs).
   server.on('close', () => source.stop());
 
-  // Cycle 11: warm the WHOLE pipeline (winepulse playback + engine) by running one serialized
-  // synthesis through the persistent source at startup, so the FIRST real Speak isn't cold. It
-  // holds the mutex, so the first real request waits behind it. Best-effort. (Tests disable it.)
+  // Cycle 11: warm the WHOLE pipeline (winepulse playback + engine) at startup so the FIRST real
+  // Speak isn't cold. CRITICAL ORDERING: the warmup must WAIT for the persistent reader to actually
+  // be streaming (`whenLive`) before opening its window — otherwise it races `source.start()`, gets
+  // an empty window, and no-ops (the bug the operator saw: `[warmup] failed … reader not live`).
+  // It holds the mutex across the wait + synth, so the first real /tts queues behind it and the
+  // warmup is guaranteed to be the first LIVE capture window. Best-effort. (Tests disable it.)
   if (opts.warmOnStart !== false) {
-    void runExclusive(() =>
-      synthesize(source, bridgeCommand, 'warm up', {}, bridgeTimeoutMs, captureGraceMs, trim),
-    )
-      .then(() => console.log('[warmup] done'))
-      .catch((err: unknown) =>
+    void runExclusive(async () => {
+      console.log('[warmup] awaiting capture reader…');
+      const t0 = Date.now();
+      const live = await source.whenLive(captureReadyTimeoutMs);
+      if (!live) {
+        // The monitor never streamed pre-playback — proves a priming read/write is the real fix.
         console.warn(
-          `[warmup] failed (first real Speak may be colder): ${err instanceof Error ? err.message : String(err)}`,
-        ),
+          `[warmup] skipped — capture reader not live within ${captureReadyTimeoutMs}ms (first Speak may be colder)`,
+        );
+        return;
+      }
+      console.log(`[warmup] reader live after ${Date.now() - t0}ms — priming…`);
+      const r = await synthesize(
+        source,
+        bridgeCommand,
+        'warm up',
+        {},
+        bridgeTimeoutMs,
+        captureGraceMs,
+        trim,
       );
+      // Surface the warmup's OWN audio metric: if the warmup window itself clipped (wavMs short
+      // / rawCapture short), the cold-start is deeper than the reader's first window.
+      console.log(
+        `[warmup tts-audio] wavMs=${r.wavMs} rawCaptureMs=${r.rawCaptureMs} windowFirstByte=${r.windowFirstByteMs}`,
+      );
+      console.log('[warmup] done'); // only on a real, successful priming synthesis
+    }).catch((err: unknown) =>
+      console.warn(
+        `[warmup] failed (first real Speak may be colder): ${err instanceof Error ? err.message : String(err)}`,
+      ),
+    );
   }
 
   return server;
@@ -441,6 +467,12 @@ export async function warmUp(opts: ServerOptions = {}): Promise<void> {
   const t0 = Date.now();
   console.log('[warmup] priming capture + engine pipeline…');
   try {
+    // Same ordering rule as the in-server warmup: wait for the reader to actually stream before
+    // opening a window, or the window is empty and we no-op.
+    if (!(await source.whenLive(opts.captureReadyTimeoutMs ?? DEFAULT_CAPTURE_READY))) {
+      console.warn('[warmup] skipped — capture reader not live (first Speak may be colder)');
+      return;
+    }
     await synthesize(
       source,
       opts.bridgeCommand ?? DEFAULT_BRIDGE,
