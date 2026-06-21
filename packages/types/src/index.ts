@@ -153,8 +153,14 @@ export interface VoiceConfig {
 export interface MouthEvent {
   /** Time of this mouth event, in milliseconds from the start of the audio. */
   timeMs: number;
-  /** Viseme / mouth-shape id (or mouth-height). Provider-defined scale. */
+  /** Mouth HEIGHT (SAPI4 TTSMOUTH bMouthHeight, ~0..255). Named `shape` for back-compat. */
   shape: number;
+  /**
+   * Mouth WIDTH (SAPI4 TTSMOUTH bMouthWidth, ~0..255). Optional: present from the
+   * TruVoice server; absent for fallback providers. Together with `shape` (height) it
+   * selects the AgentMouthOverlay type via the authentic VoiceMouthOverlay mapping.
+   */
+  width?: number;
 }
 
 export interface TtsResult {

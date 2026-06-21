@@ -4,13 +4,7 @@
 // mounts a host element it owns. Browser-only (harness-validated); the pure
 // logic it composes (playback/queue/wrap/states) is unit-tested separately.
 
-import type {
-  AnimationModel,
-  CharacterModel,
-  FrameMouthOverlay,
-  TtsProvider,
-  TtsResult,
-} from '@vivify/types';
+import type { AnimationModel, CharacterModel, TtsProvider, TtsResult } from '@vivify/types';
 import type { Agent, AgentEvent, CharacterBundleRef, MoveOptions, SpeakOptions } from './types.js';
 import { ActionQueue } from './queue.js';
 import { Playback, playableLength, type Rng } from './playback.js';
@@ -20,7 +14,7 @@ import { Balloon } from './balloon.js';
 import { animationForState, directionTo, gestureState, moveState } from './states.js';
 import { StubTtsProvider } from './provider.js';
 import { WebAudioSink, type AudioSink, type AudioHandle } from './audio.js';
-import { chooseOverlay, interpolatedShape } from './lipsync.js';
+import { chooseOverlay, interpolatedMouth } from './lipsync.js';
 import { loadCharacter } from './loader.js';
 
 export interface CreateAgentOptions {
@@ -329,9 +323,11 @@ class VivifyAgent implements Agent {
   private async speakWithAudio(result: TtsResult, signal: AbortSignal): Promise<void> {
     if (signal.aborted) return;
 
-    // Loop the Speaking animation while audio plays; track the active frame's
-    // mouth overlays so the lip-sync ticker can choose among them.
-    let overlays: FrameMouthOverlay[] = [];
+    // Loop the Speaking animation while audio plays (if this character has one). The
+    // lip-sync ticker sources mouth overlays from whatever frame is ON SCREEN
+    // (compositor.currentOverlays) — NOT from a Speaking-state animation — so it works
+    // for characters (e.g. Genie) that have no Speaking state and just hold a rest pose
+    // whose frames carry the mouth overlays (ADR-0018).
     let looping = true;
     // Holder so the closures below can share the latest Playback (TS can't narrow
     // a `let` reassigned only inside a closure).
@@ -367,7 +363,6 @@ class VivifyAgent implements Agent {
         clock: this.clock,
         rng: this.rng,
         onFrame: (_i, frame) => {
-          overlays = frame.mouth?.overlays ?? [];
           this.compositor.renderFrame(frame);
         },
         onEnd: () => {
@@ -416,23 +411,26 @@ class VivifyAgent implements Agent {
       const tick = (): void => {
         if (settled) return;
         const t = audioHandle.currentTimeMs();
-        // Interpolate the mouth shape between (sparse) timeline anchors so the mouth
-        // MOVES instead of holding a pose for seconds (ADR-0017 / Cycle 6 interim).
-        const shape = interpolatedShape(result.mouthTimeline, t);
-        const chosen = shape !== null ? chooseOverlay(shape, overlays) : null;
+        // Interpolate mouth height+width between (sparse) timeline anchors so the mouth
+        // MOVES, map to an AgentMouthOverlay type (VoiceMouthOverlay), and select that
+        // overlay from the frame currently on screen (ADR-0018, ADR-0017 interim).
+        const overlays = this.compositor.currentOverlays();
+        const m = interpolatedMouth(result.mouthTimeline, t);
+        const chosen = m ? chooseOverlay(m.height, m.width, overlays) : null;
         this.compositor.setMouthOverlay(chosen);
         // TODO(cycle-6): remove once the mouth path is confirmed. Log the first tick's
         // decision + every overlay change, so a moving mouth is visible in the console
-        // and a static one is obviously static (with the reason for any null overlay).
+        // (and width/type are checkable). A static mouth is then obviously static.
         if (!lipsyncLogged || (chosen?.imageIndex ?? null) !== lastLoggedImageIndex) {
           lipsyncLogged = true;
           lastLoggedImageIndex = chosen?.imageIndex ?? null;
+          const hw = m ? `h=${Math.round(m.height)} w=${Math.round(m.width)}` : 'no-event';
           const reason = chosen
             ? `type=${chosen.type} imageIndex=${chosen.imageIndex}`
-            : shape === null
+            : m === null
               ? 'null (no timeline event <= t / empty timeline)'
               : `null (frame has ${overlays.length} mouth overlays)`;
-          console.info(`[vivify:lipsync] t=${Math.round(t)} shape=${shape} -> ${reason}`);
+          console.info(`[vivify:lipsync] t=${Math.round(t)} ${hw} -> ${reason}`);
         }
         timer = this.clock.setTimeout(tick, LIPSYNC_TICK_MS);
       };

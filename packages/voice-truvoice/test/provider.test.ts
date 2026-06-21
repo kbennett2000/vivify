@@ -31,8 +31,10 @@ const KNOWN_WAV = new Uint8Array([
 ]);
 const KNOWN_WAV_B64 = Buffer.from(KNOWN_WAV).toString('base64');
 
+// Mixed: the first event carries a mouth WIDTH, the second omits it. The provider
+// must carry `width` through when present and leave it absent when not.
 const CANNED_TIMELINE: MouthEvent[] = [
-  { timeMs: 0, shape: 0 },
+  { timeMs: 0, shape: 0, width: 0 },
   { timeMs: 50, shape: 9 },
 ];
 
@@ -99,8 +101,11 @@ describe('TruVoiceProvider', () => {
     expect(Buffer.from(bytes.subarray(0, 4)).toString('ascii')).toBe('RIFF');
     expect(Buffer.from(bytes.subarray(8, 12)).toString('ascii')).toBe('WAVE');
 
-    // Mouth timeline passes through as MouthEvent[].
+    // Mouth timeline passes through as MouthEvent[], carrying `width` when the
+    // server sends it and omitting it when absent.
     expect(result.mouthTimeline).toEqual(CANNED_TIMELINE);
+    expect(result.mouthTimeline[0]!.width).toBe(0);
+    expect('width' in (result.mouthTimeline[1] as object)).toBe(false);
 
     // The server received the right request (asserted from the external double,
     // not from anything we configured the provider to echo back).

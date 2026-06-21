@@ -16,7 +16,7 @@ const hangBridgePath = fileURLToPath(new URL('./hang-bridge.mjs', import.meta.ur
 
 interface TtsResponse {
   audioWavBase64: string;
-  mouthTimeline: Array<{ timeMs: number; shape: number }>;
+  mouthTimeline: Array<{ timeMs: number; shape: number; width?: number }>;
   format: string;
 }
 
@@ -81,11 +81,13 @@ describe('voice-server HTTP layer (fake bridge)', () => {
     expect(wav.toString('ascii', 0, 4)).toBe('RIFF');
     expect(wav.toString('ascii', 8, 12)).toBe('WAVE');
 
-    // mouthTimeline is the bridge's 3 canned events, normalized to {timeMs, shape}.
+    // mouthTimeline is the bridge's 3 canned events, normalized to {timeMs, shape,
+    // width} — the mouth WIDTH (from the bridge's nested mouth.width) is now carried
+    // for the authentic VoiceMouthOverlay(height,width) mapping.
     expect(json.mouthTimeline).toEqual([
-      { timeMs: 0, shape: 0 },
-      { timeMs: 50, shape: 5 },
-      { timeMs: 120, shape: 2 },
+      { timeMs: 0, shape: 0, width: 0 },
+      { timeMs: 50, shape: 5, width: 3 },
+      { timeMs: 120, shape: 2, width: 4 },
     ]);
   });
 

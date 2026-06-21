@@ -1,5 +1,5 @@
 # ADR-0016: Integrate authentic voice + lip-sync into `@vivify/core`
-Status: Accepted · Date: 2026-06-20
+Status: Accepted (shape→overlay mapping Superseded by ADR-0018) · Date: 2026-06-20
 
 ## Context
 Cycle 6 (`cycle-6-lipsync`, `docs/cycles/cycle-6-lipsync.md`) joins the pieces the earlier cycles set up into a working talking character: the authentic-voice backend (ADR-0004), the pluggable `TtsProvider` seam (ADR-0005), the per-frame mouth overlays parsed verbatim into `raw.overlays` (ADR-0010), and the audio-aligned mouth timeline the SAPI4 sink now emits (ADR-0015). `@vivify/core` has to consume `speak() → { audio, mouthTimeline }` and produce on-screen lip-sync without acquiring a framework dependency (ADR-0007) and without making the new behavior impossible to test in CI.

@@ -46,6 +46,11 @@ export class Compositor {
     this.draw();
   }
 
+  /** Mouth overlays carried by the frame currently on screen (lip-sync sources from here). */
+  currentOverlays(): readonly FrameMouthOverlay[] {
+    return this.lastFrame?.mouth?.overlays ?? [];
+  }
+
   clear(): void {
     this.lastFrame = null;
     this.mouthOverlay = null;

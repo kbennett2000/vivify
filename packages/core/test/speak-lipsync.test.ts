@@ -27,8 +27,8 @@ import { FakeClock } from './_helpers.js';
 
 // Distinct widths so a recorded drawImage maps back to an imageIndex:
 //   width 3 = base frame image (index 0)
-//   width 1 = "closed" mouth overlay (index 1, type 0)
-//   width 2 = "open"   mouth overlay (index 2, type 9)
+//   width 1 = "closed" mouth overlay (index 1, AgentMouthOverlay type 0 = Closed)
+//   width 2 = "open"   mouth overlay (index 2, AgentMouthOverlay type 4 = Wide4)
 const BASE_W = 3;
 const CLOSED_W = 1;
 const OPEN_W = 2;
@@ -57,7 +57,7 @@ function model(): CharacterModel {
     images: [{ imageIndex: 0, x: 0, y: 0 }],
     durationMs: 100,
     branches: [],
-    mouth: { overlays: [overlay(0, 1), overlay(9, 2)] },
+    mouth: { overlays: [overlay(0, 1), overlay(4, 2)] },
   });
   const speaking: AnimationModel = {
     name: 'Speak',
@@ -267,9 +267,12 @@ async function flush(): Promise<void> {
   for (let i = 0; i < 8; i++) await Promise.resolve();
 }
 
+// shape == mouth HEIGHT, width == mouth WIDTH. t≈0 -> height 0 maps to Closed
+// (type 0); after 500ms -> height 140 & width 100 maps to Wide4 (type 4) since
+// the authentic tree selects Wide4 for width>=60 && height>=120.
 const TIMELINE: MouthEvent[] = [
-  { timeMs: 0, shape: 0 },
-  { timeMs: 500, shape: 140 },
+  { timeMs: 0, shape: 0, width: 0 },
+  { timeMs: 500, shape: 140, width: 100 },
 ];
 
 function audioResult(): TtsResult {
@@ -411,8 +414,8 @@ describe('stop interrupts in-flight synthesis (Test B)', () => {
 
 // Faster timeline so the second viseme lands within the first lip-sync window.
 const TIMELINE_FAST: MouthEvent[] = [
-  { timeMs: 0, shape: 0 },
-  { timeMs: 300, shape: 140 },
+  { timeMs: 0, shape: 0, width: 0 },
+  { timeMs: 300, shape: 140, width: 100 },
 ];
 
 function audioResultFast(): TtsResult {
@@ -425,7 +428,7 @@ function singleFrameModel(): CharacterModel {
     images: [{ imageIndex: 0, x: 0, y: 0 }],
     durationMs: 100,
     branches: [],
-    mouth: { overlays: [overlay(0, 1), overlay(9, 2)] },
+    mouth: { overlays: [overlay(0, 1), overlay(4, 2)] },
   };
   const speaking: AnimationModel = {
     name: 'Speak',

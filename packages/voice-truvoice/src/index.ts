@@ -39,13 +39,16 @@ function normalizeTimeline(raw: unknown): MouthEvent[] {
       const rec = entry as Record<string, unknown>;
       const timeMs = rec.timeMs;
       const shape = rec.shape;
+      const width = rec.width;
       if (
         typeof timeMs === 'number' &&
         Number.isFinite(timeMs) &&
         typeof shape === 'number' &&
         Number.isFinite(shape)
       ) {
-        out.push({ timeMs, shape });
+        const event: MouthEvent = { timeMs, shape };
+        if (typeof width === 'number' && Number.isFinite(width)) event.width = width;
+        out.push(event);
       }
     }
   }
