@@ -110,8 +110,14 @@ async function runBridge(
       });
       child.on('error', (err) => finish(() => reject(err)));
       child.on('close', (code) => {
-        if (code === 0) finish(resolve);
-        else
+        if (code === 0) {
+          // Surface the bridge's own diagnostics (event count, timeMs span, raw qTimeStamp
+          // range, AudioStart) in the server log on success too — otherwise they're only
+          // visible on failure, and the lip-sync timing evidence would be invisible.
+          const diag = stderr.trim();
+          if (diag) console.log(`[bridge] ${diag}`);
+          finish(resolve);
+        } else
           finish(() =>
             reject(new Error(`bridge exited with code ${code}: ${stderr.slice(0, 500)}`)),
           );
