@@ -8,6 +8,7 @@ import {
   builtinManifestUrl,
   isAcsFile,
   parseBuiltinIndex,
+  resolveVoiceServerUrl,
   type BuiltinCharacter,
 } from './characters.js';
 
@@ -26,6 +27,13 @@ export function initApp(): void {
   const speakInput = el<HTMLInputElement>('speak');
   const voiceUrlInput = el<HTMLInputElement>('voiceUrl');
   const status = el<HTMLDivElement>('status');
+
+  // Pre-fill the voice URL so sound works out of the box when the voice container is
+  // up (Cycle 9) — defaults to http://localhost:8080, overridable at build via
+  // VITE_VOICE_SERVER_URL. The field stays editable; clearing it goes silent.
+  if (!voiceUrlInput.value) {
+    voiceUrlInput.value = resolveVoiceServerUrl(import.meta.env.VITE_VOICE_SERVER_URL);
+  }
 
   let agent: Agent | null = null;
   let lastAnimation: string | null = null;
@@ -140,7 +148,17 @@ export function initApp(): void {
     const opts: SpeakOptions | undefined = url
       ? { provider: new TruVoiceProvider({ url }) }
       : undefined;
-    void agent.speak(speakInput.value.trim() || 'Hello! I am alive in your browser.', opts);
+    const text = speakInput.value.trim() || 'Hello! I am alive in your browser.';
+    // The voice URL is pre-filled by default (Cycle 9), so a missing/unreachable voice
+    // server is a normal case, not a crash: surface it and point at the silent escape hatch.
+    agent.speak(text, opts).catch((err: unknown) => {
+      const detail = err instanceof Error ? err.message : String(err);
+      setStatus(
+        url
+          ? `Couldn't reach the voice server at ${url} (${detail}) — clear the field to speak silently.`
+          : `Speak failed: ${detail}`,
+      );
+    });
   });
   el<HTMLButtonElement>('stopBtn').addEventListener('click', () => agent?.stop());
   el<HTMLButtonElement>('hideBtn').addEventListener('click', () => void agent?.hide());

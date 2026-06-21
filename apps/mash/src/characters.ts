@@ -36,3 +36,16 @@ export function builtinManifestUrl(id: string): string {
 export function isAcsFile(file: { name: string }): boolean {
   return /\.acs$/i.test(file.name);
 }
+
+/** Default voice server URL when none is configured (the local voice container, Cycle 9). */
+export const DEFAULT_VOICE_SERVER_URL = 'http://localhost:8080';
+
+/**
+ * Resolve the initial "Voice server URL" value. A configured value (e.g. the build-time
+ * `VITE_VOICE_SERVER_URL`) wins after trimming; anything blank/whitespace/undefined falls
+ * back to the local voice service so sound works out of the box when its container is up
+ * (Cycle 9). The field stays runtime-editable, and clearing it goes silent.
+ */
+export function resolveVoiceServerUrl(raw: string | undefined): string {
+  return raw?.trim() || DEFAULT_VOICE_SERVER_URL;
+}

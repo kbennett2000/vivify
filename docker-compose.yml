@@ -1,0 +1,31 @@
+# Run the whole vivify demo with one command:  docker compose up
+#
+#   → MASH at http://localhost:8090, talking to the voice service at http://localhost:8080
+#
+# How the two relate: MASH is a static SPA, and the voice call happens in the BROWSER, not
+# container-to-container. So both services just publish their ports to the host, and the
+# browser reaches localhost:8080 / localhost:8090. (No shared network needed; CORS is
+# handled by the voice server reflecting the request Origin.)
+#
+# `docker compose up mash` runs just the demo (no voice binaries required). The `voice`
+# service needs your user-supplied engine files in services/voice-server/vendor/ and a
+# prebuilt dist (`pnpm --filter @vivify/voice-server typecheck`) — see that service's README.
+services:
+  mash:
+    build:
+      context: .
+      dockerfile: apps/mash/Dockerfile
+      args:
+        # Default voice URL baked into the bundle (still runtime-editable in the UI).
+        VITE_VOICE_SERVER_URL: http://localhost:8080
+    image: vivify-mash
+    ports:
+      # Change the host port freely: "9000:8090". The container port stays 8090.
+      - '8090:8090'
+
+  voice:
+    build:
+      context: services/voice-server
+    image: vivify-voice
+    ports:
+      - '8080:8080'

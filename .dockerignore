@@ -1,0 +1,34 @@
+# Docker build context excludes (repo root is the context for apps/mash/Dockerfile).
+# Keep the context small AND guarantee no third-party IP can enter any image.
+
+# Dependencies + build outputs (reinstalled / rebuilt inside the image)
+**/node_modules
+**/dist
+**/build
+**/coverage
+**/*.tsbuildinfo
+.turbo
+
+# VCS / editor / CI noise
+.git
+.github
+.gitignore
+**/.DS_Store
+
+# Third-party IP and engine artifacts — NEVER ship these (see docs/legal-and-assets.md)
+services/voice-server/vendor/
+services/voice-server/.wine/
+services/voice-server/prefix/
+services/voice-server/bridge/*.exe
+services/voice-server/bridge/*.dll
+services/voice-server/bridge/*.o
+**/*.acs
+**/*.acf
+**/*.aca
+**/*.acd
+
+# MASH built-in bundles are local-only, user-supplied (not committed, not shipped)
+apps/mash/public/characters/
+
+# Local-only Claude config
+.claude/settings.local.json
