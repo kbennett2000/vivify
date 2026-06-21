@@ -20,7 +20,7 @@ import { Balloon } from './balloon.js';
 import { animationForState, directionTo, gestureState, moveState } from './states.js';
 import { StubTtsProvider } from './provider.js';
 import { WebAudioSink, type AudioSink, type AudioHandle } from './audio.js';
-import { activeMouthEvent, chooseOverlay } from './lipsync.js';
+import { chooseOverlay, interpolatedShape } from './lipsync.js';
 import { loadCharacter } from './loader.js';
 
 export interface CreateAgentOptions {
@@ -342,7 +342,6 @@ class VivifyAgent implements Agent {
     }
 
     const audioHandle = handle;
-    const duration = audioHandle.durationMs();
     await new Promise<void>((resolve) => {
       let timer: number | null = null;
       let settled = false;
@@ -364,9 +363,10 @@ class VivifyAgent implements Agent {
       const tick = (): void => {
         if (settled) return;
         const t = audioHandle.currentTimeMs();
-        const ev = activeMouthEvent(result.mouthTimeline, t);
-        this.compositor.setMouthOverlay(ev ? chooseOverlay(ev.shape, overlays) : null);
-        if (duration > 0) this.balloon.revealFraction(t / duration);
+        // Interpolate the mouth shape between (sparse) timeline anchors so the mouth
+        // MOVES instead of holding a pose for seconds (ADR-0017 / Cycle 6 interim).
+        const shape = interpolatedShape(result.mouthTimeline, t);
+        this.compositor.setMouthOverlay(shape !== null ? chooseOverlay(shape, overlays) : null);
         timer = this.clock.setTimeout(tick, LIPSYNC_TICK_MS);
       };
       tick();

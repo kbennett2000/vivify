@@ -18,6 +18,12 @@ export const SHAPE_MAX = 160;
  * timeline is sorted by timeMs (the voice server emits it in order).
  */
 export function activeMouthEvent(timeline: readonly MouthEvent[], tMs: number): MouthEvent | null {
+  const idx = lastIndexAtOrBefore(timeline, tMs);
+  return idx >= 0 ? timeline[idx]! : null;
+}
+
+/** Index of the last event whose timeMs <= tMs, or -1 if none. Binary search; assumes sorted. */
+function lastIndexAtOrBefore(timeline: readonly MouthEvent[], tMs: number): number {
   let lo = 0;
   let hi = timeline.length - 1;
   let ans = -1;
@@ -30,7 +36,29 @@ export function activeMouthEvent(timeline: readonly MouthEvent[], tMs: number): 
       hi = mid - 1;
     }
   }
-  return ans >= 0 ? timeline[ans]! : null;
+  return ans;
+}
+
+/**
+ * Linearly interpolate the mouth `shape` at `tMs` between the two timeline events
+ * that bracket it. Returns null before the first event (closed mouth) and holds the
+ * last event's shape after the final event. This is the Cycle 6 interim that gives a
+ * MOVING mouth when the voice server emits sparse anchors (~1 event/2s) — it morphs
+ * smoothly between them rather than holding one pose. It is NOT per-phoneme-accurate
+ * lip-sync; with dense (per-phoneme) anchors it degrades to near-inert smoothing.
+ * The authentic dense-event fix is the real-time-audio bridge (ADR-0017 / Cycle 7).
+ * Returns a CONTINUOUS float (not a quantized SAPI4 height); `chooseOverlay` floors it.
+ */
+export function interpolatedShape(timeline: readonly MouthEvent[], tMs: number): number | null {
+  const i = lastIndexAtOrBefore(timeline, tMs);
+  if (i < 0) return null;
+  const prev = timeline[i]!;
+  const next = timeline[i + 1];
+  if (!next) return prev.shape; // after the last event: hold
+  const span = next.timeMs - prev.timeMs;
+  if (span <= 0) return next.shape; // coincident/out-of-order anchors: snap to the later one
+  const frac = (tMs - prev.timeMs) / span;
+  return prev.shape + (next.shape - prev.shape) * frac;
 }
 
 /**

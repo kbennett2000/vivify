@@ -27,7 +27,7 @@ export { realClock } from './clock.js';
 export type { Clock } from './clock.js';
 export { WebAudioSink } from './audio.js';
 export type { AudioSink, AudioHandle } from './audio.js';
-export { activeMouthEvent, chooseOverlay, SHAPE_MAX } from './lipsync.js';
+export { activeMouthEvent, chooseOverlay, interpolatedShape, SHAPE_MAX } from './lipsync.js';
 
 // Shared contracts re-exported for convenience; canonical home is @vivify/types.
 export type {

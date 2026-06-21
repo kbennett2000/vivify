@@ -6,7 +6,7 @@
 
 import { describe, it, expect } from 'vitest';
 import type { FrameMouthOverlay, MouthEvent } from '@vivify/types';
-import { activeMouthEvent, chooseOverlay, SHAPE_MAX } from '../src/lipsync.js';
+import { activeMouthEvent, chooseOverlay, interpolatedShape, SHAPE_MAX } from '../src/lipsync.js';
 
 const ev = (timeMs: number, shape: number): MouthEvent => ({ timeMs, shape });
 
@@ -51,6 +51,53 @@ describe('activeMouthEvent', () => {
   it('holds the final event for t past the end', () => {
     const tl = [ev(0, 5), ev(100, 6)];
     expect(activeMouthEvent(tl, 1000)).toBe(tl[1]);
+  });
+});
+
+describe('interpolatedShape', () => {
+  it('returns null for an empty timeline and before the first event', () => {
+    expect(interpolatedShape([], 0)).toBeNull();
+    expect(interpolatedShape([], 1000)).toBeNull();
+    const tl = [ev(100, 10), ev(200, 20)];
+    expect(interpolatedShape(tl, 0)).toBeNull();
+    expect(interpolatedShape(tl, 99)).toBeNull();
+  });
+
+  it('returns the exact shape at each event boundary', () => {
+    const tl = [ev(0, 0), ev(100, 100), ev(200, 40)];
+    expect(interpolatedShape(tl, 0)).toBe(0);
+    expect(interpolatedShape(tl, 100)).toBe(100);
+    expect(interpolatedShape(tl, 200)).toBe(40);
+  });
+
+  it('linearly interpolates between two bracketing events', () => {
+    const tl = [ev(0, 0), ev(100, 100)];
+    expect(interpolatedShape(tl, 25)).toBe(25);
+    expect(interpolatedShape(tl, 50)).toBe(50);
+    expect(interpolatedShape(tl, 75)).toBe(75);
+    // A non-trivial range (the interim's whole point: motion between sparse anchors).
+    const sparse = [ev(0, 20), ev(2000, 60)];
+    expect(interpolatedShape(sparse, 1000)).toBe(40);
+    expect(interpolatedShape(sparse, 500)).toBe(30);
+  });
+
+  it('holds the final event shape after the end (and for a single-event timeline)', () => {
+    const tl = [ev(0, 5), ev(100, 90)];
+    expect(interpolatedShape(tl, 1000)).toBe(90);
+    const one = [ev(50, 33)];
+    expect(interpolatedShape(one, 49)).toBeNull(); // before it
+    expect(interpolatedShape(one, 50)).toBe(33);
+    expect(interpolatedShape(one, 5000)).toBe(33); // hold
+  });
+
+  it('changes continuously across a sparse 2-point timeline (no static hold mid-span)', () => {
+    const tl = [ev(0, 0), ev(1000, 160)];
+    const a = interpolatedShape(tl, 100);
+    const b = interpolatedShape(tl, 200);
+    const c = interpolatedShape(tl, 300);
+    expect(a).not.toBeNull();
+    expect(b!).toBeGreaterThan(a!);
+    expect(c!).toBeGreaterThan(b!);
   });
 });
 

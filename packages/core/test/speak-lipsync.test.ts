@@ -277,7 +277,7 @@ function audioResult(): TtsResult {
 }
 
 describe('speak with audio + lip-sync (Test A)', () => {
-  it('plays audio, drives changing mouth overlays + word reveal, then clears on end', async () => {
+  it('plays audio, drives changing mouth overlays, holds the full balloon, then clears on end', async () => {
     const clock = new FakeClock();
     const fd = makeFakeDoc();
     const sink = new FakeAudioSink(clock, 1000);
@@ -302,8 +302,9 @@ describe('speak with audio + lip-sync (Test A)', () => {
     expect(earlyDraws.some((d) => d.w === CLOSED_W)).toBe(true);
     expect(earlyDraws.some((d) => d.w === OPEN_W)).toBe(false);
 
-    // Word reveal starts near-empty, then grows as audio progresses.
-    const earlyWords = wordCount(balloonText(fd.mount));
+    // "Render once and hold": the balloon shows the full text immediately and is
+    // NOT blanked/re-revealed during the ticks (regression for the double-fire).
+    expect(wordCount(balloonText(fd.mount))).toBe(4);
 
     // Advance audio time past the second mouth event (timeMs 500, shape 140).
     clock.advance(600);
@@ -313,10 +314,8 @@ describe('speak with audio + lip-sync (Test A)', () => {
     // The overlay changed: the "open" overlay (width 2) now appears.
     expect(lateDraws.some((d) => d.w === OPEN_W)).toBe(true);
 
-    // Balloon revealed more words than at the start (reveal-by-progress).
-    const lateWords = wordCount(balloonText(fd.mount));
-    expect(lateWords).toBeGreaterThan(earlyWords);
-    expect(lateWords).toBeLessThanOrEqual(4);
+    // Balloon still holds the full text — never blanked between ticks.
+    expect(wordCount(balloonText(fd.mount))).toBe(4);
 
     fd.draws.splice(0);
 

@@ -178,12 +178,20 @@ export function createVoiceServer(opts: ServerOptions = {}): Server {
             parsed.voice ?? {},
             bridgeTimeoutMs,
           );
+          const mouthTimeline = parseTimeline(timeline);
+          // Per-utterance density log: a too-sparse timeline means a static mouth.
+          // ~9 events for a multi-second utterance ⇒ the file-audio output mode is
+          // coarsening the engine's Visual notifications (ADR-0017 / Cycle 7).
+          // TODO(cycle-7): remove once real-time-audio density is verified.
+          console.log(
+            `[tts] ${mouthTimeline.length} mouth events, ${wav.length} bytes wav for ${parsed.text.length} chars`,
+          );
           sendJson(
             res,
             200,
             {
               audioWavBase64: wav.toString('base64'),
-              mouthTimeline: parseTimeline(timeline),
+              mouthTimeline,
               format: 'wav',
             },
             cors,
