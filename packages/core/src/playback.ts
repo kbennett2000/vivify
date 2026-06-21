@@ -39,6 +39,30 @@ export function playableLength(frames: FrameModel[]): number {
   return n;
 }
 
+/**
+ * The exit-branch return-to-rest path from `fromIndex`: follow each frame's `exitFrame`
+ * to its terminal (a frame with no `exitFrame`), returning the ordered indices to render
+ * (NOT including `fromIndex`, which the caller already showed). Returns `[]` when the
+ * starting frame has no exit branch. Cycle- and bounds-guarded so malformed data can't
+ * loop forever. Used for `transitionType === 1` animations (ADR-0020 / cycle-8).
+ * Bounds are the full `frames.length` (not `playableLength`): an `exitFrame` into the
+ * trailing zero-image tail would render a blank frame, but a real rest pose is a real
+ * frame, so in practice the chain terminates on a visible neutral frame.
+ */
+export function computeExitPath(frames: readonly FrameModel[], fromIndex: number): number[] {
+  const path: number[] = [];
+  const visited = new Set<number>();
+  let cur = fromIndex;
+  while (cur >= 0 && cur < frames.length && !visited.has(cur)) {
+    visited.add(cur);
+    const next = frames[cur]!.exitFrame;
+    if (next === undefined || next < 0 || next >= frames.length) break;
+    path.push(next);
+    cur = next;
+  }
+  return path;
+}
+
 export interface PlaybackOptions {
   clock: Clock;
   rng?: Rng;

@@ -7,7 +7,7 @@
 import type { AnimationModel, CharacterModel, TtsProvider, TtsResult } from '@vivify/types';
 import type { Agent, AgentEvent, CharacterBundleRef, MoveOptions, SpeakOptions } from './types.js';
 import { ActionQueue } from './queue.js';
-import { Playback, playableLength, type Rng } from './playback.js';
+import { Playback, playableLength, computeExitPath, type Rng } from './playback.js';
 import { realClock, type Clock } from './clock.js';
 import { Compositor } from './compositor.js';
 import { Balloon } from './balloon.js';
@@ -125,7 +125,7 @@ class VivifyAgent implements Agent {
 
   play(animationName: string): Promise<void> {
     this.emit('play', animationName);
-    return this.queue.enqueue((signal) => this.runAnimation(animationName, signal));
+    return this.queue.enqueue((signal) => this.runGestureAnimation(animationName, signal));
   }
 
   show(): Promise<void> {
@@ -196,7 +196,7 @@ class VivifyAgent implements Agent {
     return this.queue.enqueue((signal) => {
       const dir = directionTo(this.posX, this.posY, x, y);
       const name = animationForState(this.model.states, gestureState(dir), this.rng);
-      return name ? this.runAnimation(name, signal) : Promise.resolve();
+      return name ? this.runGestureAnimation(name, signal) : Promise.resolve();
     });
   }
 
@@ -256,26 +256,33 @@ class VivifyAgent implements Agent {
     return pb;
   }
 
-  /** Play a named animation to completion (or until the action is aborted). */
-  private runAnimation(name: string, signal: AbortSignal): Promise<void> {
-    const anim = this.animMap.get(name);
-    if (!anim) return Promise.resolve();
-    return new Promise<void>((resolve) => {
+  /**
+   * Play an animation to its natural end (or until aborted), resolving the LAST rendered
+   * frame index. Forward-only — no return-to-rest (callers add that where appropriate).
+   * The resolved index is only meaningful when the signal was NOT aborted (callers must
+   * guard on `signal.aborted` before using it to start a return walk).
+   */
+  private playForward(anim: AnimationModel, signal: AbortSignal): Promise<number> {
+    return new Promise<number>((resolve) => {
       if (signal.aborted) {
-        resolve();
+        resolve(0);
         return;
       }
+      let lastIndex = 0;
       const pb = new Playback(anim, {
         clock: this.clock,
         rng: this.rng,
-        onFrame: (_i, frame) => this.compositor.renderFrame(frame),
+        onFrame: (i, frame) => {
+          lastIndex = i;
+          this.compositor.renderFrame(frame);
+        },
         onEnd: () => finish(),
       });
       this.current = pb;
       const finish = (): void => {
         signal.removeEventListener('abort', onAbort);
         if (this.current === pb) this.current = null;
-        resolve();
+        resolve(lastIndex);
       };
       const onAbort = (): void => {
         pb.cancel();
@@ -283,6 +290,74 @@ class VivifyAgent implements Agent {
       };
       signal.addEventListener('abort', onAbort);
       pb.start();
+    });
+  }
+
+  /** Play a named animation to completion (forward only) — used by state transitions. */
+  private async runAnimation(name: string, signal: AbortSignal): Promise<void> {
+    const anim = this.animMap.get(name);
+    if (anim) await this.playForward(anim, signal);
+  }
+
+  /**
+   * Play a named gesture animation, then walk it back to a neutral rest pose so the
+   * character never freezes on a non-neutral frame (and the next queued action starts
+   * from rest — no hard cut). The return path follows the animation's `transitionType`
+   * (cycle-8 / ADR-0020).
+   */
+  private async runGestureAnimation(name: string, signal: AbortSignal): Promise<void> {
+    const anim = this.animMap.get(name);
+    if (!anim) return;
+    const lastIndex = await this.playForward(anim, signal);
+    if (!signal.aborted) await this.returnToRest(anim, lastIndex, signal);
+  }
+
+  /** Walk `anim` back to rest after it finished on frame `lastIndex` (cycle-8 / ADR-0020). */
+  private async returnToRest(
+    anim: AnimationModel,
+    lastIndex: number,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (signal.aborted) return;
+    if (anim.transitionType === 2) return; // authored to end neutral — no return
+    if (anim.transitionType === 1) {
+      // Exit-branch: follow exitFrame from the last frame to its terminal (rest) frame.
+      await this.playIndices(anim, computeExitPath(anim.frames, lastIndex), signal);
+      return;
+    }
+    // Named return animation (transitionType 0): play it forward once (no nesting).
+    const ret = anim.returnAnimation ? this.animMap.get(anim.returnAnimation) : undefined;
+    if (ret) await this.playForward(ret, signal);
+  }
+
+  /** Render a fixed sequence of an animation's frames over the clock; abortable. */
+  private playIndices(anim: AnimationModel, indices: number[], signal: AbortSignal): Promise<void> {
+    return new Promise<void>((resolve) => {
+      if (signal.aborted || indices.length === 0) {
+        resolve();
+        return;
+      }
+      let i = 0;
+      let timer: number | null = null;
+      const finish = (): void => {
+        signal.removeEventListener('abort', onAbort);
+        if (timer !== null) this.clock.clearTimeout(timer);
+        resolve();
+      };
+      const onAbort = (): void => finish();
+      signal.addEventListener('abort', onAbort);
+      const step = (): void => {
+        if (signal.aborted) return;
+        const frame = anim.frames[indices[i]!];
+        if (frame) this.compositor.renderFrame(frame);
+        i += 1;
+        if (i >= indices.length) {
+          finish();
+          return;
+        }
+        timer = this.clock.setTimeout(step, frame?.durationMs ?? 0);
+      };
+      step();
     });
   }
 

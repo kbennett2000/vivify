@@ -3,7 +3,7 @@
 // See docs/cycles/cycle-3-renderer.md.
 
 import { describe, it, expect } from 'vitest';
-import { nextFrameIndex, playableLength, Playback } from '../src/playback.js';
+import { nextFrameIndex, playableLength, Playback, computeExitPath } from '../src/playback.js';
 import type { FrameBranch } from '@vivify/types';
 import { frame, animation, FakeClock } from './_helpers.js';
 
@@ -68,6 +68,47 @@ describe('playableLength', () => {
 
   it('is 0 when all frames are empty', () => {
     expect(playableLength([frame({ images: 0 }), frame({ images: 0 })])).toBe(0);
+  });
+});
+
+describe('computeExitPath', () => {
+  it('follows a multi-step exit chain and returns the ordered indices (excluding fromIndex)', () => {
+    // 11 frames; exit chain 5 -> 8 -> 10 (terminal). Other frames irrelevant.
+    const frames = Array.from({ length: 11 }, () => frame());
+    frames[5] = frame({ exitFrame: 8 });
+    frames[8] = frame({ exitFrame: 10 });
+    // frame 10 has no exitFrame -> terminal rest pose.
+
+    expect(computeExitPath(frames, 5)).toEqual([8, 10]);
+  });
+
+  it('returns [] when the starting frame has no exit branch (already terminal)', () => {
+    const frames = [frame(), frame(), frame()];
+    expect(computeExitPath(frames, 1)).toEqual([]);
+  });
+
+  it('stops at an out-of-range exitFrame (never includes the bad index)', () => {
+    // 3 frames; frame 0 exits to 99 which is out of range -> path stops, [] returned.
+    const frames = [frame({ exitFrame: 99 }), frame(), frame()];
+    expect(computeExitPath(frames, 0)).toEqual([]);
+  });
+
+  it('stops once an in-range chain hits an out-of-range exitFrame', () => {
+    // 3 frames; 0 -> 1 (valid), 1 -> 99 (out of range): path is [1] only.
+    const frames = [frame({ exitFrame: 1 }), frame({ exitFrame: 99 }), frame()];
+    expect(computeExitPath(frames, 0)).toEqual([1]);
+  });
+
+  it('terminates on a cycle (a -> b -> a) instead of looping forever', () => {
+    // a.exitFrame = b, b.exitFrame = a. The visited guard must stop the walk.
+    const frames = [frame({ exitFrame: 1 }), frame({ exitFrame: 0 })];
+    const path = computeExitPath(frames, 0);
+    // 0 -> 1 (push 1), 1 -> 0 (push 0), then 0 is already visited -> stop.
+    // The key invariant: the visited guard makes the walk terminate and stay
+    // finite — it never revisits a frame, so length is bounded by frames.length.
+    expect(path).toEqual([1, 0]);
+    expect(path.length).toBeLessThanOrEqual(frames.length);
+    expect(new Set(path).size).toBe(path.length); // no index repeats
   });
 });
 
