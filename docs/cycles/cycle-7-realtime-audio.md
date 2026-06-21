@@ -31,6 +31,18 @@ Same engine/voice/text ⇒ deterministic duration, so pass A's audio-relative ti
 B's WAV. If pass A's `Select`/MMAudioDest creation fails (the symptom of a missing audio device), the
 bridge logs the HRESULT loudly and exits non-zero — it does **not** silently fall back to sparse data.
 
+### Per-viseme timing (real-time mode)
+Each event's `timeMs` is the **wall-clock arrival** of its `Visual` callback relative to playback start
+(`GetTickCount()` at the callback minus the base set at `AudioStart`, falling back to the first viseme if
+`AudioStart` doesn't fire), **not** the callback's `qTimeStamp`. In real-time playback the engine fires
+`Visual` as the audio plays, so arrival ≈ audio position and `timeMs` advances 0..~duration. This matches
+the oracle, which also ignores `Visual.qTimeStamp` and times visemes by the audio device's play position.
+(An earlier attempt using `qTimeStamp - AudioStart` collapsed every event to one large constant — that
+value does not advance per viseme in MMAudioDest mode.) Documented fallback if arrival also collapses
+(burst delivery): query the audio device position (`IAudio::PosnGet`) per callback. The bridge logs
+`[label] events=N timeMs=[first..last]ms rawQ=[min..max] audioStart=yes|no` so the arrival span and the
+(constant) raw `qTimeStamp` are both visible — the server forwards this on success as a `[bridge] …` line.
+
 ## Dummy audio device under Wine (the new unknown)
 `MMAudioDest` opens a `waveOut` device inside `Select()`; a headless Wine container has no sound card.
 We provide a **PulseAudio null sink** (the most reliable headless-Wine audio backend; a bare ALSA `null`

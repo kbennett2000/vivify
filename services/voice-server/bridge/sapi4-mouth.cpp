@@ -84,7 +84,18 @@ class CMouthSink : public ITTSNotifySink {
 public:
   std::vector<MouthEvent>& out;
   volatile bool done = false;
-  QWORD t0 = 0;
+  // Per-viseme timing is the WALL-CLOCK arrival of each Visual callback relative to
+  // playback start, NOT the callback's qTimeStamp: in real-time (MMAudioDest) mode the
+  // engine delivers Visual as the audio plays, so arrival ≈ audio position, whereas
+  // qTimeStamp does not advance per viseme here. (DoubleAgent likewise ignores
+  // Visual.qTimeStamp and times visemes by the audio device position — see ADR-0019.)
+  DWORD baseMs = 0;
+  bool started = false;
+  // Diagnostics only (logged once per pass): did AudioStart fire, and what was the raw
+  // qTimeStamp range (constant ⇒ confirms qTimeStamp is not a usable per-viseme clock).
+  bool audioStartFired = false;
+  bool rawQSeen = false;
+  QWORD rawQMin = 0, rawQMax = 0;
   explicit CMouthSink(std::vector<MouthEvent>& sink) : out(sink) {}
 
   // IUnknown
@@ -102,8 +113,10 @@ public:
 
   // ITTSNotifySink
   STDMETHODIMP AttribChanged(DWORD) override { return S_OK; }
-  STDMETHODIMP AudioStart(QWORD qTimeStamp) override {
-    t0 = qTimeStamp; // zero point so timestamps are audio-relative
+  STDMETHODIMP AudioStart(QWORD /*qTimeStamp*/) override {
+    baseMs = GetTickCount(); // playback-start zero point (wall clock)
+    started = true;
+    audioStartFired = true;
     return S_OK;
   }
   STDMETHODIMP AudioStop(QWORD) override {
@@ -112,8 +125,20 @@ public:
   }
   STDMETHODIMP Visual(QWORD qTimeStamp, CHAR cIPAPhoneme, CHAR cEnginePhoneme, DWORD /*dwHints*/,
                       PTTSMOUTH pTTSMouth) override {
+    const DWORD now = GetTickCount();
+    if (!started) { // AudioStart didn't fire — base off the first viseme instead
+      baseMs = now;
+      started = true;
+    }
+    if (!rawQSeen) {
+      rawQMin = rawQMax = qTimeStamp;
+      rawQSeen = true;
+    } else {
+      if (qTimeStamp < rawQMin) rawQMin = qTimeStamp;
+      if (qTimeStamp > rawQMax) rawQMax = qTimeStamp;
+    }
     MouthEvent e{};
-    e.timeMs = (qTimeStamp >= t0) ? static_cast<unsigned long long>(qTimeStamp - t0) : 0ULL;
+    e.timeMs = (now >= baseMs) ? static_cast<unsigned long long>(now - baseMs) : 0ULL;
     e.phoneme = static_cast<int>(cEnginePhoneme ? cEnginePhoneme : cIPAPhoneme);
     if (pTTSMouth) {
       e.height = pTTSMouth->bMouthHeight;
@@ -219,6 +244,14 @@ static HRESULT synthesize(const GUID& modeGuid, IUnknown* pAudio, const std::str
       if (sink->done) break;
       Sleep(2);
     }
+  }
+  if (sink) {
+    const unsigned long long firstT = events.empty() ? 0ULL : events.front().timeMs;
+    const unsigned long long lastT = events.empty() ? 0ULL : events.back().timeMs;
+    fprintf(stderr,
+            "[%s] events=%zu timeMs=[%llu..%llu]ms rawQ=[%llu..%llu] audioStart=%s\n", label,
+            events.size(), firstT, lastT, sink->rawQMin, sink->rawQMax,
+            sink->audioStartFired ? "yes" : "no");
   }
 done:
   if (pCentral && sinkKey) pCentral->UnRegister(sinkKey);
