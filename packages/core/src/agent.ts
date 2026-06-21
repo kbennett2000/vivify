@@ -86,6 +86,41 @@ class VivifyAgent implements Agent {
     host.appendChild(this.balloon.el);
     this.host = host;
     (mount ?? doc.body).appendChild(host);
+
+    this.logOverlayScan();
+  }
+
+  // TODO(cycle-6): remove once the overlay source is confirmed. One-shot diagnostic:
+  // where (if anywhere) does this character carry per-frame mouth overlays? The mouth
+  // won't move if the Speaking-state animation's frames have none — this scans EVERY
+  // animation so the next run shows whether overlays live on a different animation or
+  // nowhere at all. console.info so it shows at the browser's Info level.
+  private logOverlayScan(): void {
+    const anims = this.model.animations;
+    let withOverlays = 0;
+    let totalOverlays = 0;
+    const detail: string[] = [];
+    for (const a of anims) {
+      const recs = a.frames.flatMap((f) => f.mouth?.overlays ?? []);
+      if (recs.length === 0) continue;
+      withOverlays++;
+      totalOverlays += recs.length;
+      const types = [...new Set(recs.map((o) => o.type))].sort((x, y) => x - y);
+      const images = [...new Set(recs.map((o) => o.imageIndex))].slice(0, 8);
+      detail.push(
+        `${a.name}: ${recs.length} overlays, types=[${types.join(',')}], images=[${images.join(',')}]`,
+      );
+    }
+    const speaking = this.model.states['Speaking'] ?? [];
+    console.info(
+      `[vivify:lipsync] scan: ${anims.length} animations, ${withOverlays} with overlays, ${totalOverlays} overlay records total; Speaking state -> [${speaking.join(',')}]`,
+    );
+    for (const line of detail) console.info(`[vivify:lipsync] scan:   ${line}`);
+    if (withOverlays === 0) {
+      console.info(
+        '[vivify:lipsync] scan: NO per-frame mouth overlays anywhere in this character.',
+      );
+    }
   }
 
   // --- public API (all actions enqueue) ---
