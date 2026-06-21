@@ -76,7 +76,15 @@ importers:
 
   packages/voice-truvoice: {}
 
-  services/voice-server: {}
+  services/voice-server:
+    dependencies:
+      '@vivify/types':
+        specifier: workspace:*
+        version: link:../../packages/types
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.2
+        version: 22.20.0
 
 packages:
 

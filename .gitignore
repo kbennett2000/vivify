@@ -14,6 +14,12 @@ services/voice-server/vendor/
 # Wine prefix used by the voice server
 services/voice-server/.wine/
 services/voice-server/prefix/
+# Compiled SAPI4 bridge artifacts (built from our .cpp in the Docker/Wine image)
+services/voice-server/bridge/*.exe
+services/voice-server/bridge/*.dll
+services/voice-server/bridge/*.o
+# User-supplied SAPI4 SDK (headers/libs) for compiling the bridge
+services/voice-server/sapi4-sdk/
 # Extracted Microsoft assets (bitmaps/sounds pulled out of .acs during dev)
 **/fixtures/**/*.bmp
 **/fixtures/**/*.wav
