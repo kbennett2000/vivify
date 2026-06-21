@@ -2,20 +2,22 @@
 // sapi4-mouth — vivify's SAPI4 TTS bridge with mouth/viseme capture.
 //
 // A Windows console program (run under Wine) that speaks `text` with a SAPI4
-// voice (e.g. L&H TruVoice) and writes BOTH the synthesized audio (WAV) AND a
-// per-phoneme mouth/viseme timeline (JSON).
+// voice (e.g. L&H TruVoice) and writes a per-phoneme mouth/viseme timeline (JSON).
+// It does NOT write audio — the server records that from the PulseAudio null sink.
 //
-//   sapi4-mouth.exe --text-file <in.txt> --wav <out.wav> --timeline <out.json>
-//                   [--voice <modeGuid>] [--speed <n>] [--pitch <n>]
+//   sapi4-mouth.exe --text-file <in.txt> --timeline <out.json>
+//                   [--wav <ignored>] [--voice <modeGuid>] [--speed <n>] [--pitch <n>]
 //
 // Cycle 7 — DENSE per-phoneme mouth data via REAL-TIME audio. In file-audio mode
 // (CLSID_AudioDestFile) the engine emits flat/sparse Visual/TTSMOUTH events; the
 // real-time multimedia destination (CLSID_MMAudioDest) emits the full per-phoneme
-// stream. MMAudioDest gives no way to tee the rendered PCM (verified against the
-// DoubleAgent oracle), so we run TWO synthesis passes:
-//   Pass A (events): CLSID_MMAudioDest -> dense mouth timeline (what we return).
-//   Pass B (wav):    CLSID_AudioDestFile -> the WAV (events discarded).
-// Same engine/voice/text => deterministic duration, so the timeline aligns to the WAV.
+// stream, so synthesis plays in real time to a (dummy) audio device.
+//
+// Cycle 11 — SINGLE PASS. MMAudioDest gives no way to tee the rendered PCM (verified
+// against the DoubleAgent oracle). Rather than a second CLSID_AudioDestFile pass for
+// the WAV (the old Pass B — removed), the SERVER records the PulseAudio null sink's
+// monitor with `parec` WHILE this one real-time pass plays. So the bridge produces only
+// the dense events + timeline; `--wav` is accepted but ignored. See cycle-11 doc.
 //
 // Written against the REAL SAPI4 SDK header <speech.h> (Microsoft Speech SDK 4.0);
 // the MMAudioDest wiring follows DoubleAgent's Sapi4Voice.cpp (read for API only):
@@ -23,13 +25,11 @@
 //   ITTSEnum::Select(modeGuid, &central, (LPUNKNOWN)audio).
 // MMAudioDest opens a waveOut device inside Select(); a headless Wine container must
 // provide a (dummy) audio device — a PulseAudio null sink (see Dockerfile). If that
-// device is missing, Pass A's Select fails: we log the HRESULT and exit non-zero
-// rather than silently returning sparse file-mode data.
+// device is missing, Select fails: we log the HRESULT and exit non-zero rather than
+// silently returning sparse file-mode data.
 //
-// Build ANSI (no _S_UNICODE) so the interface macros resolve to the *A* forms; only
-// IAudioFile::Set takes a wide path. We ship NO Microsoft headers/binaries; the
-// build supplies speech.h (see bridge/README.md). CLSID_MMAudioDest is declared in
-// that same SAPI4 SDK header as CLSID_AudioDestFile.
+// Build ANSI (no _S_UNICODE) so the interface macros resolve to the *A* forms. We ship
+// NO Microsoft headers/binaries; the build supplies speech.h (see bridge/README.md).
 // ---------------------------------------------------------------------------
 
 #include <windows.h>
@@ -64,7 +64,8 @@ static bool parseArgs(int argc, char** argv, Args& a) {
     else if (!strcmp(k, "--speed") && v) a.speed = atol(argv[++i]);
     else if (!strcmp(k, "--pitch") && v) a.pitch = atol(argv[++i]);
   }
-  return a.textFile && a.wavFile && a.timelineFile;
+  // Cycle 11 single-pass: --wav is optional/ignored (audio comes from the null-sink capture).
+  return a.textFile && a.timelineFile;
 }
 
 // ---- one captured mouth/viseme event --------------------------------------
@@ -274,10 +275,18 @@ done:
 
 int main(int argc, char** argv) {
   const DWORD tProcStart = GetTickCount(); // Cycle 10: total-latency zero point
+  // Cycle 11 (WIN 2): emit a marker as the very first thing main does + flush it, so the
+  // server can time spawn→first-stderr-byte ≈ the Wine process-load prologue (which sits
+  // outside main's self-measured window). See cycle-11 doc / timing.ts.
+  fprintf(stderr, "[boot] sapi4-mouth\n");
+  fflush(stderr);
   Args a;
   if (!parseArgs(argc, argv, a)) {
-    fprintf(stderr, "usage: sapi4-mouth --text-file <in> --wav <out.wav> --timeline <out.json>"
-                    " [--voice <modeGuid>] [--speed n] [--pitch n]\n");
+    // Cycle 11: single-pass — the bridge no longer produces the WAV (the server records it
+    // from the PulseAudio null-sink monitor during this real-time pass). --wav is accepted
+    // but ignored; only --text-file and --timeline are required.
+    fprintf(stderr, "usage: sapi4-mouth --text-file <in> --timeline <out.json>"
+                    " [--wav <ignored>] [--voice <modeGuid>] [--speed n] [--pitch n]\n");
     return 2;
   }
 
@@ -326,11 +335,13 @@ int main(int argc, char** argv) {
   // Engine init (Cycle 10): everything up to here — CoInitialize + voice-mode resolve — is
   // the per-request engine-init cost (the warm-engine cycle target; see cycle-10 doc).
   const DWORD initMs = GetTickCount() - tProcStart;
-  DWORD passAttfbMs = 0, passAtotalMs = 0, passBttfbMs = 0, passBtotalMs = 0;
+  DWORD passAttfbMs = 0, passAtotalMs = 0;
 
-  // Pass A — DENSE events via real-time multimedia audio (CLSID_MMAudioDest). This is
-  // the whole point of Cycle 7. MMAudioDest opens a waveOut device inside Select(); if
-  // the container has no (dummy) audio device, Select fails here — report, don't fake.
+  // SINGLE PASS (Cycle 11) — DENSE events via real-time multimedia audio (CLSID_MMAudioDest).
+  // The engine plays the whole utterance to the PulseAudio null sink in real time; the server
+  // records that sink's monitor to produce the WAV, so there is NO second (file) pass. The
+  // bridge only emits events + the timeline. MMAudioDest opens a waveOut device inside Select();
+  // if the container has no (dummy) audio device, Select fails here — report, don't fake.
   {
     IUnknown* pMM = nullptr;
     hr = CoCreateInstance(CLSID_MMAudioDest, nullptr, CLSCTX_SERVER, IID_IUnknown, (void**)&pMM);
@@ -355,37 +366,6 @@ int main(int argc, char** argv) {
     }
   }
 
-  // Pass B — the WAV via the file destination (events discarded). File audio needs no
-  // device; this is the proven Cycle 5 path.
-  {
-    IAudioFile* pFile = nullptr;
-    hr = CoCreateInstance(CLSID_AudioDestFile, nullptr, CLSCTX_ALL, IID_IAudioFile, (void**)&pFile);
-    if (FAILED(hr) || !pFile) {
-      fprintf(stderr, "audio file dest (CLSID_AudioDestFile) failed: 0x%08lx\n", hr);
-      CoUninitialize();
-      return 6;
-    }
-    WCHAR wszWav[MAX_PATH];
-    MultiByteToWideChar(CP_ACP, 0, a.wavFile, -1, wszWav, MAX_PATH);
-    hr = pFile->Set(wszWav, 1); // dwID=1, per the SAPI4 file-audio convention
-    if (FAILED(hr)) {
-      fprintf(stderr, "IAudioFile::Set(%s) failed: 0x%08lx\n", a.wavFile, hr);
-      pFile->Release();
-      CoUninitialize();
-      return 7;
-    }
-    std::vector<MouthEvent> wavEvents; // discarded (file-mode events are sparse)
-    hr = synthesize(modeGuid, static_cast<IUnknown*>(pFile), text, a.speed, a.pitch, wavEvents,
-                    "file-wav", &passBttfbMs, &passBtotalMs);
-    pFile->Flush();
-    pFile->Release();
-    if (FAILED(hr)) {
-      fprintf(stderr, "FATAL: WAV synthesis pass failed: 0x%08lx\n", hr);
-      CoUninitialize();
-      return 11;
-    }
-  }
-
   // Write the dense timeline (Pass A) + a density summary so a flat timeline is obvious.
   int rc = 0;
   const unsigned long long firstT = events.empty() ? 0 : events.front().timeMs;
@@ -400,15 +380,19 @@ int main(int argc, char** argv) {
   }
   const DWORD writeMs = GetTickCount() - tWriteStart;
 
-  // Cycle 10: one machine-readable per-stage breakdown the server parses + logs (timing.ts).
-  // passA_total ≈ utterance length (the inherent real-time floor); passB_total is the serial
-  // overhead on top; init is the per-request engine COM init the warm-engine cycle targets.
+  // Cycle 10/11: one machine-readable per-stage breakdown the server parses + logs (timing.ts).
+  // passA_total ≈ utterance length (the inherent real-time floor); init is the per-request
+  // engine COM init. Pass B is gone (single pass) — passB_* dropped.
   const DWORD totalMs = GetTickCount() - tProcStart;
   fprintf(stderr,
-          "[timing] initMs=%lu passA_ttfbMs=%lu passA_totalMs=%lu passB_ttfbMs=%lu "
-          "passB_totalMs=%lu writeMs=%lu totalMs=%lu\n",
-          initMs, passAttfbMs, passAtotalMs, passBttfbMs, passBtotalMs, writeMs, totalMs);
+          "[timing] initMs=%lu passA_ttfbMs=%lu passA_totalMs=%lu writeMs=%lu totalMs=%lu\n",
+          initMs, passAttfbMs, passAtotalMs, writeMs, totalMs);
 
-  CoUninitialize();
-  return rc;
+  // Cycle 11 (WIN 2): fast exit. The synthesis is done and the timeline is written; skip the
+  // slow graceful teardown (CoUninitialize + TruVoice/MMAudioDest DLL unload + device close/
+  // drain) that sits AFTER this point and inflates the server-observed spawn→close window.
+  // This is a one-shot process — the OS/Wine reclaims everything on exit. fflush first since
+  // _Exit does not flush stdio.
+  fflush(nullptr);
+  _Exit(rc);
 }

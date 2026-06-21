@@ -1,9 +1,9 @@
-// Cycle 10 — parse the bridge's per-stage timing line so the server can log a combined
+// Cycle 10/11 — parse the bridge's per-stage timing line so the server can log a combined
 // latency breakdown per /tts request. The bridge (sapi4-mouth.cpp) prints ONE line to
-// stderr of the form:
-//   [timing] initMs=12 passA_ttfbMs=80 passA_totalMs=1840 passB_ttfbMs=15 passB_totalMs=420 writeMs=1 totalMs=2290
-// where passA (CLSID_MMAudioDest, real-time) ≈ utterance length (the inherent floor) and
-// passB (CLSID_AudioDestFile) is the serial overhead on top. Pure + unit-tested (no Wine).
+// stderr of the form (Cycle 11, single-pass — passB_* removed):
+//   [timing] initMs=12 passA_ttfbMs=80 passA_totalMs=2900 writeMs=1 totalMs=2920
+// passA (CLSID_MMAudioDest, real-time) ≈ utterance length — the inherent lip-sync floor.
+// Pure + unit-tested (no Wine).
 
 /** Per-stage timings emitted by the SAPI4 bridge, in milliseconds. */
 export interface BridgeTiming {
@@ -13,13 +13,9 @@ export interface BridgeTiming {
   passATtfbMs: number;
   /** Pass A total ≈ utterance length — the inherent real-time floor. */
   passATotalMs: number;
-  /** Pass B (file AudioDestFile): synth start → AudioStart. */
-  passBTtfbMs: number;
-  /** Pass B total — serial overhead on top of the floor (candidate future saving). */
-  passBTotalMs: number;
   /** Timeline JSON write. */
   writeMs: number;
-  /** Whole bridge process, start → exit. */
+  /** Bridge self-time: first statement of main() → the timing print (before fast _Exit). */
   totalMs: number;
 }
 
@@ -29,8 +25,6 @@ const FIELDS: ReadonlyArray<readonly [string, keyof BridgeTiming]> = [
   ['initMs', 'initMs'],
   ['passA_ttfbMs', 'passATtfbMs'],
   ['passA_totalMs', 'passATotalMs'],
-  ['passB_ttfbMs', 'passBTtfbMs'],
-  ['passB_totalMs', 'passBTotalMs'],
   ['writeMs', 'writeMs'],
   ['totalMs', 'totalMs'],
 ];
@@ -59,9 +53,15 @@ export function parseBridgeTiming(stderr: string): BridgeTiming | null {
 export interface TtsTiming {
   /** Server-observed bridge child wall time (spawn → close). */
   bridgeMs: number;
-  /** Reading the WAV + timeline files the bridge wrote. */
-  readMs: number;
-  /** base64-encoding the WAV for the JSON response. */
+  /**
+   * Wine process-load prologue: spawn → the child's first stderr byte (its `[boot]` line),
+   * which is emitted as main()'s first statement. The residual structural cost (Cycle 11
+   * WIN 2) a persistent-engine daemon would remove.
+   */
+  wineLoadMs: number;
+  /** Recording the null-sink monitor (parec) — runs concurrently with the bridge. */
+  captureMs: number;
+  /** Building the WAV from captured PCM (wrap + trim) + base64 encode for the response. */
   encodeMs: number;
   /** Whole /tts handler, request → response. */
   totalMs: number;
@@ -69,15 +69,24 @@ export interface TtsTiming {
   bridge: BridgeTiming | null;
 }
 
-/** One-line human-readable breakdown for the per-request server log. */
+/**
+ * One-line human-readable breakdown for the per-request server log. Splits the old
+ * unexplained gap into load / self / teardown: teardown ≈ bridgeWall − wineLoad − bridge.total
+ * (the COM/DLL/device teardown that the bridge's fast `_Exit` is meant to skip).
+ */
 export function formatTtsTiming(t: TtsTiming): string {
   const b = t.bridge;
+  const teardownMs = b ? Math.max(0, t.bridgeMs - t.wineLoadMs - b.totalMs) : null;
   const bridgePart = b
     ? `bridge[init=${b.initMs} passA=${b.passATotalMs}(ttfb ${b.passATtfbMs}) ` +
-      `passB=${b.passBTotalMs}(ttfb ${b.passBTtfbMs}) write=${b.writeMs} total=${b.totalMs}]`
+      `write=${b.writeMs} self=${b.totalMs}]`
     : 'bridge[timing unavailable]';
+  const gapPart =
+    teardownMs === null
+      ? `wineLoad=${t.wineLoadMs}`
+      : `wineLoad=${t.wineLoadMs} teardown=${teardownMs}`;
   return (
-    `total=${t.totalMs}ms (bridgeWall=${t.bridgeMs} read=${t.readMs} encode=${t.encodeMs}) ` +
+    `total=${t.totalMs}ms (bridgeWall=${t.bridgeMs} ${gapPart} capture=${t.captureMs} encode=${t.encodeMs}) ` +
     bridgePart
   );
 }

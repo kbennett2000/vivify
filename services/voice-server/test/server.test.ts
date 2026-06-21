@@ -14,6 +14,14 @@ import type { TtsTiming } from '../src/timing.js';
 const fakeBridgePath = fileURLToPath(new URL('./fake-bridge.mjs', import.meta.url));
 const failBridgePath = fileURLToPath(new URL('./fail-bridge.mjs', import.meta.url));
 const hangBridgePath = fileURLToPath(new URL('./hang-bridge.mjs', import.meta.url));
+const fakeCapturePath = fileURLToPath(new URL('./fake-capture.mjs', import.meta.url));
+const emptyCapturePath = fileURLToPath(new URL('./fake-capture-empty.mjs', import.meta.url));
+
+// Cycle 11: every server runs the single-pass flow — a timeline-only bridge plus a
+// capture process that streams raw PCM. The fake-capture emits leading-silence +
+// tone PCM the server wraps + trims into the WAV; a small grace keeps tests fast.
+const captureCommand = `node ${fakeCapturePath}`;
+const captureGraceMs = 20;
 
 interface TtsResponse {
   audioWavBase64: string;
@@ -46,7 +54,11 @@ describe('voice-server HTTP layer (fake bridge)', () => {
   let baseUrl: string;
 
   beforeAll(async () => {
-    server = createVoiceServer({ bridgeCommand: `node ${fakeBridgePath}` });
+    server = createVoiceServer({
+      bridgeCommand: `node ${fakeBridgePath}`,
+      captureCommand,
+      captureGraceMs,
+    });
     const port = await listenOnEphemeralPort(server);
     baseUrl = `http://127.0.0.1:${port}`;
   });
@@ -76,7 +88,9 @@ describe('voice-server HTTP layer (fake bridge)', () => {
     const json = (await res.json()) as TtsResponse;
     expect(json.format).toBe('wav');
 
-    // audioWavBase64 must base64-decode to a real RIFF/WAVE container.
+    // Cycle 11: the WAV is built from the fake-capture's raw PCM (leading silence +
+    // tone), wrapped + trimmed by the server — NOT produced by the bridge. It must
+    // still base64-decode to a real RIFF/WAVE container.
     const wav = Buffer.from(json.audioWavBase64, 'base64');
     expect(wav.length).toBeGreaterThanOrEqual(44);
     expect(wav.toString('ascii', 0, 4)).toBe('RIFF');
@@ -159,6 +173,8 @@ describe('voice-server latency instrumentation (Cycle 10, fake bridge)', () => {
   beforeAll(async () => {
     server = createVoiceServer({
       bridgeCommand: `node ${fakeBridgePath}`,
+      captureCommand,
+      captureGraceMs,
       onTiming: (t) => {
         captured = t;
       },
@@ -184,13 +200,15 @@ describe('voice-server latency instrumentation (Cycle 10, fake bridge)', () => {
     const t = captured as TtsTiming;
 
     // Bridge stages came from the fake bridge's `[timing]` stderr line, parsed by
-    // the server (NOT injected by this test) — assert the values from that line.
+    // the server (NOT injected by this test) — assert the values from that line
+    // (Cycle 11 single-pass: no passB_*).
     expect(t.bridge).not.toBeNull();
     expect(t.bridge?.passATotalMs).toBe(300);
-    expect(t.bridge?.totalMs).toBe(400);
+    expect(t.bridge?.totalMs).toBe(320);
 
-    // Server-observed stages are real measurements: present and non-negative.
-    for (const v of [t.bridgeMs, t.readMs, t.encodeMs, t.totalMs]) {
+    // Server-observed stages are real wall-clock measurements: present and
+    // non-negative (Cycle 11: readMs is gone, replaced by capture/wineLoad).
+    for (const v of [t.bridgeMs, t.wineLoadMs, t.captureMs, t.encodeMs, t.totalMs]) {
       expect(typeof v).toBe('number');
       expect(v).toBeGreaterThanOrEqual(0);
     }
@@ -202,7 +220,12 @@ describe('voice-server bridge-failure path', () => {
   let baseUrl: string;
 
   beforeAll(async () => {
-    server = createVoiceServer({ bridgeCommand: `node ${failBridgePath}` });
+    // The capture still runs and must be torn down even though the bridge fails.
+    server = createVoiceServer({
+      bridgeCommand: `node ${failBridgePath}`,
+      captureCommand,
+      captureGraceMs,
+    });
     const port = await listenOnEphemeralPort(server);
     baseUrl = `http://127.0.0.1:${port}`;
   });
@@ -230,6 +253,8 @@ describe('voice-server bridge timeout', () => {
     // must kill it and fail the request rather than pinning the connection open.
     server = createVoiceServer({
       bridgeCommand: `node ${hangBridgePath}`,
+      captureCommand,
+      captureGraceMs,
       bridgeTimeoutMs: 200,
     });
     const port = await listenOnEphemeralPort(server);
@@ -251,12 +276,47 @@ describe('voice-server bridge timeout', () => {
   });
 });
 
+describe('voice-server empty-capture path (Cycle 11 honest failure)', () => {
+  let server: Server;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    // The bridge succeeds (timeline written), but the capture produces NO audio.
+    // The server must NOT fake a silent WAV — it throws → 500.
+    server = createVoiceServer({
+      bridgeCommand: `node ${fakeBridgePath}`,
+      captureCommand: `node ${emptyCapturePath}`,
+      captureGraceMs,
+    });
+    const port = await listenOnEphemeralPort(server);
+    baseUrl = `http://127.0.0.1:${port}`;
+  });
+
+  afterAll(async () => {
+    await closeServer(server);
+  });
+
+  it('POST /tts → 500 when the null-sink capture produced no audio', async () => {
+    const res = await fetch(`${baseUrl}/tts`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'nothing was captured' }),
+    });
+    expect(res.status).toBe(500);
+    expect(((await res.json()) as { error: string }).error).toContain('no audio');
+  });
+});
+
 describe('voice-server CORS (browser access)', () => {
   let server: Server;
   let baseUrl: string;
 
   beforeAll(async () => {
-    server = createVoiceServer({ bridgeCommand: `node ${fakeBridgePath}` });
+    server = createVoiceServer({
+      bridgeCommand: `node ${fakeBridgePath}`,
+      captureCommand,
+      captureGraceMs,
+    });
     const port = await listenOnEphemeralPort(server);
     baseUrl = `http://127.0.0.1:${port}`;
   });

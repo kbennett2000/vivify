@@ -43,35 +43,60 @@ curl -sX POST localhost:8080/tts -H 'content-type: application/json' \
 **GO** iff: authentic TruVoice WAV **and** a non-empty `mouthTimeline` aligned to the
 audio. WAV-only or empty/garbage timeline = **NO-GO** (report it).
 
-## Latency: warm engine + per-request timing (Cycle 10)
+## Latency: warm engine + per-request timing (Cycles 10–11)
 
-**Warm engine.** The container keeps Xvfb (`:99`) and `wineserver` **persistent** for its
-lifetime and runs a best-effort **warmup synth** at startup (`entrypoint.sh`), instead of
-cold-starting Wine on every request. The per-request bridge command is therefore a plain
+**Warm engine (Cycle 10).** The container keeps Xvfb (`:99`) and `wineserver` **persistent**
+for its lifetime and runs a best-effort **warmup synth** at startup (`entrypoint.sh`), instead
+of cold-starting Wine on every request. The per-request bridge command is therefore a plain
 `wine …/sapi4-mouth.exe` (no `xvfb-run -a`), still overridable via `VIVIFY_SAPI4_BRIDGE`.
 Practical effect: the **first** Speak after `docker run` is the warmup-affected one;
 subsequent Speaks are warm.
 
+**Single pass (Cycle 11).** The bridge used to synthesize each phrase **twice** — Pass A
+(`CLSID_MMAudioDest`, real-time playback) for the dense per-phoneme mouth events, then Pass B
+(`CLSID_AudioDestFile`) purely to write the WAV. Pass B is gone. The bridge now runs **one**
+real-time pass: it plays the utterance to the PulseAudio null sink and emits the mouth
+timeline. The server captures the audio by recording that sink's `.monitor` with `parec`
+**concurrently** with the pass, so one synthesis produces both the events and the audio.
+
+- `VIVIFY_CAPTURE` (injectable; default
+  `parec --device=dummy.monitor --format=s16le --rate=44100 --channels=1`) — the command the
+  server starts before spawning the bridge and stops (SIGTERM) after it exits.
+- `VIVIFY_CAPTURE_GRACE_MS` (default `200`) — how long after the bridge exits the server keeps
+  capturing, so the audio tail isn't clipped.
+- The null sink's format is **pinned** (`s16le` / 44100 / mono in `pulse-null.pa`) so the
+  monitor stream is deterministic and `parec` records it 1:1 — no resample guesswork. The
+  server collects the raw PCM from capture stdout, wraps it into a WAV header, and **trims
+  leading silence** so the WAV's first audible sample aligns with timeline `t≈0`.
+
+**Honest failure.** If the capture produces no audio (or only silence below the minimum),
+`/tts` returns **500** (`null-sink capture produced no audio`). The server never returns a
+faked silent WAV.
+
 **Per-request timing.** Every `POST /tts` logs a `[tts-timing]` line combining the server
 stages with the bridge's own per-stage `[timing]` line. Stages:
-- `initMs` — per-request engine COM init inside the bridge process (warming does **not**
-  remove this; a future persistent-engine daemon would).
-- `passA_totalMs` — the real-time `MMAudioDest` pass; ≈ utterance length. This is the
-  inherent floor for dense lip-sync (the dense viseme stream only exists during real-time
-  playback).
-- `passB_totalMs` — the file-audio (`AudioDestFile`) WAV pass; serial overhead on top of
-  Pass A.
-- `writeMs` — bridge timeline write.
-- `bridgeWall` / `read` / `encode` — server-side: bridge spawn→close wall time, WAV
-  `readFile`, base64 encode.
+- `wineLoad` — the Wine process-load prologue: child spawn → the bridge's `[boot]` (its first
+  statement in `main()`). This is the residual structural cost; a persistent-engine bridge
+  daemon would remove it (future work — not done here).
+- `capture` — server-side null-sink capture wall time (`parec` start → stop, incl. the grace
+  tail).
+- `teardown` — the time after the bridge's timing print until the process exits, now closed by
+  the bridge's fast `_Exit` (it skips COM/DLL unload + device drain; the OS reclaims them).
+- `bridge[init=… passA=…(ttfb …) write=… self=…]` — the bridge's own sub-parts: engine COM
+  init, the single real-time pass (with time-to-first-byte), timeline write, and the bridge's
+  self-measured `main()` window. (There is **no** `passB`.)
+- `capture` — `parec` wall time (the null-sink recording; runs concurrently with the bridge).
+- `encode` — server-side: wrapping the captured PCM into a WAV (+ leading-silence trim) and
+  base64-encoding it for the response.
 - `total` — whole handler.
 
-The bridge also still emits its `[mmaudio]` / `[file-wav] events=…` diagnostic lines next
-to `[timing]`.
+The bridge also still emits its `[mmaudio]` / event-count diagnostic lines next to `[timing]`.
 
-**Reading cold vs warm.** POST `/tts` a couple of times and compare the `[tts-timing]
-total=` values; the first request after container start reflects the warmup. The collected
-numbers and the cold-vs-warm delta live in `../../docs/cycles/cycle-10-latency.md`.
+**Reading the breakdown.** POST `/tts` a couple of times and compare the `[tts-timing]
+total=` values; the first request after container start reflects the warmup. Real before/after
+latency numbers are operator-collected (no Wine/PulseAudio in CI) in the cycle doc's table:
+`../../docs/cycles/cycle-10-latency.md` (Cycle 10) and
+`../../docs/cycles/cycle-11-latency-singlepass.md` (Cycle 11).
 
 ## Endpoints
 - `GET /health` → `{ "ok": true }`
