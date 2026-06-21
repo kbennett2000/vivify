@@ -167,4 +167,57 @@ describe('formatTtsTiming', () => {
     // No teardown when there's no bridge self-time to subtract.
     expect(out).not.toContain('teardown=');
   });
+
+  // Cycle 12: the cache hit/miss marker the operator reads to SEE the speedup.
+  it('renders a compact cache=HIT line (disk read + total only) for a cache hit', () => {
+    const t: TtsTiming = {
+      bridgeMs: 0,
+      wineLoadMs: 0,
+      windowFirstByteMs: 0,
+      buildMs: 0,
+      encodeMs: 0,
+      totalMs: 7,
+      bridge: null,
+      cache: 'hit',
+      diskReadMs: 3,
+    };
+    const out = formatTtsTiming(t);
+    expect(out).toBe('cache=HIT total=7ms (diskRead=3)');
+    // A hit bypasses synthesis, so none of the bridge/window machinery appears.
+    expect(out).not.toContain('bridgeWall=');
+    expect(out).not.toContain('windowFirstByte=');
+    expect(out).not.toContain('bridge[');
+  });
+
+  it('appends cache=miss to the normal breakdown on a synthesized (cached) request', () => {
+    const t: TtsTiming = {
+      bridgeMs: 2300,
+      wineLoadMs: 200,
+      windowFirstByteMs: 45,
+      buildMs: 4,
+      encodeMs: 2,
+      totalMs: 2310,
+      bridge: { initMs: 12, passATtfbMs: 80, passATotalMs: 1840, writeMs: 1, totalMs: 2000 },
+      cache: 'miss',
+    };
+    const out = formatTtsTiming(t);
+    // The full breakdown is still present...
+    expect(out).toContain('total=2310ms');
+    expect(out).toContain('passA=1840(ttfb 80)');
+    // ...with the miss marker appended at the end.
+    expect(out).toMatch(/cache=miss$/);
+  });
+
+  it('omits the cache marker entirely when caching is disabled (cache undefined)', () => {
+    const t: TtsTiming = {
+      bridgeMs: 2300,
+      wineLoadMs: 200,
+      windowFirstByteMs: 45,
+      buildMs: 4,
+      encodeMs: 2,
+      totalMs: 2310,
+      bridge: { initMs: 12, passATtfbMs: 80, passATotalMs: 1840, writeMs: 1, totalMs: 2000 },
+    };
+    expect(formatTtsTiming(t)).not.toContain('cache=');
+  });
 });

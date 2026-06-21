@@ -1,0 +1,38 @@
+# ADR-0024: Disk-persistent TTS response cache — keyed by hash(text+voice), served before the synthesis mutex, persisted on a Docker volume
+Status: Accepted · Date: 2026-06-21
+
+## Context
+Cycle 11 (ADR-0023) cut a cold `/tts` synthesis to its real floor — Pass A's ~3.3s of inherent real-time playback — but that floor is paid on **every** request, even a phrase the engine spoke a moment ago. A phrase's synthesis is deterministic for a given `(text, voice)`: the same input yields byte-identical audio + timeline. Re-synthesizing it is pure waste of the ~3.3s real-time floor (plus Wine, SAPI4, capture, and the serialize mutex).
+
+Cycle 12 (`docs/cycles/cycle-12-tts-cache.md`, branch this ADR records) caches the **full `/tts` response payload** to disk, keyed by `hash(text + voice)`, so a repeat is served in tens of ms. Scope: **`services/voice-server` only** — `@vivify/core`, `@vivify/acs`, the IR, and the browser are untouched; no latency/trim/warmup change from Cycle 11.
+
+## Decision
+
+**1. Cache the FULL response payload, keyed by `hash(text + voice)`.**
+The key is `keyFor(text, voice) = sha256(text + '\x00' + stableStringify(voice ?? {}))` → hex (`src/cache.ts`). `stableStringify` sorts object keys recursively, so `{speed,pitch}` and `{pitch,speed}` hash equal (key order doesn't matter) and the arbitrary `voice.raw` blob is handled; the `'\x00'` separator keeps the text and the voice JSON from blurring together. **Different voices never collide** — a phrase spoken by two voice configs is two entries. The cached bytes ARE the exact response body — `JSON.stringify({ audioWavBase64, mouthTimeline, format: 'wav' })` — so a hit reads the file and writes it to the socket **verbatim**: no parse, no re-stringify, no recompute. WHY: synthesis is deterministic for a given text+voice, so re-synthesis (the ~3.3s inherent real-time floor) is pure waste.
+
+**2. One JSON file per entry (`<key>.json`), atomic write (tmp + rename).**
+`set` writes to a per-process `.<key>.<pid>.<n>.tmp` then `rename`s onto `<key>.json`. WHY: simplest durable store. The atomic rename means a concurrent `get` never observes a partial file — it sees either the old entry or the complete new one. A corrupt or unreadable file is treated as a **miss** (`get` catches any read error → `null` → the caller synthesizes), so a bad entry can never poison a response. `init()` `mkdir -p`s the dir and reports stats for the `[cache]` startup log; `stats`/eviction scan only `*.json` (in-flight `.tmp` files are skipped).
+
+**3. Cache lookup BEFORE the synthesis mutex; re-check INSIDE it.**
+The `/tts` handler does `key = keyFor(text, voice)` then `cache.get(key)` **before** `runExclusive` (the Cycle-11 serialize mutex). A hit opens no capture window, so it bypasses serialization entirely → it is instant AND concurrent (it never queues behind an in-flight synthesis). On a miss, a **second `cache.get` runs INSIDE the mutex** to guard the cold-key double-synth race: two identical requests can both miss the pre-mutex check, but the second now hits the entry the first just wrote instead of re-synthesizing. (`diskReadMs` is just the file read; an in-mutex `cache=HIT` can show a small diskRead but a larger `total` because `total` includes the real wait behind the in-flight synth.)
+
+**4. Enabled by env, default OFF in code; unbounded by default.**
+The cache is constructed only when `opts.cacheDir` or `VIVIFY_CACHE_DIR` is set; the **code default is unset**, so existing tests and `pnpm`-local dev see exactly Cycle 11 behavior (no cache). The **container** turns it on via a Dockerfile `ENV VIVIFY_CACHE_DIR=/var/cache/vivify-tts`, so `docker compose up` needs **zero new steps**. Caps (`VIVIFY_CACHE_MAX_ENTRIES` / `VIVIFY_CACHE_MAX_BYTES`) default to `0` = unbounded ("cache everything"); when set, the oldest-by-mtime entries are evicted on write. WHY: the user explicitly wants everything cached, with no extra operator steps.
+
+**5. Persistence via a Docker named volume.**
+`docker-compose.yml` mounts `vivify-tts-cache:/var/cache/vivify-tts` on the `voice` service (declared in a top-level `volumes:` block). WHY: the cache must survive `docker compose down && up` (rebuild/recreate); a named volume keeps the entries on the host across container lifecycle, independent of the image. `compose down -v` (or a bare-`docker run` user adding `-v vivify-tts-cache:/var/cache/vivify-tts`) is the explicit opt-out/opt-in. The named volume persists across `--no-cache` rebuilds (it's data, not image) — intended.
+
+**6. Honest failure posture.**
+No cache error can ever break a `/tts` request: `init` failure is logged and non-fatal (get → miss, set → swallowed); `get` on a corrupt/unreadable entry returns `null` (synthesize); `set` failure is logged and the freshly-synthesized response is still returned. The cache never returns degraded or silent audio — consistent with the repo's honest-failure rule. A bonus that falls out for free: a HIT bypasses the live engine + capture path entirely, so it **cannot** exhibit the Cycle-11 first-Speak cold-start clip (which only afflicts live capture). Nothing is engineered for this; it is confirmed, not built.
+
+## Consequences
+- **A repeated phrase is effectively free.** First synthesis of a `(text, voice)` pays the Cycle-11 floor (~3.3s) and writes the entry; every later request for the same text+voice is served from disk in tens of ms — no Wine, no SAPI4, no capture, no mutex queueing. `[tts-timing]` renders `cache=HIT total=Nms (diskRead=…)` on a hit and appends `cache=miss` on a miss, so the operator SEES the speedup.
+- **No TTL / no invalidation — deliberate.** A phrase's synthesis is deterministic for a given text+voice, so an entry never goes stale; there is nothing to expire. The only way an entry could be "wrong" is if the engine/voice binaries themselves changed, which a fresh cache dir (or `down -v`) handles. This avoids a whole class of staleness-checking complexity for zero benefit.
+- **Unbounded by default; eviction is intentionally simple.** With caps off (the default) `enforceCaps` never runs. When set, it re-`readdir`+`stat`s the dir per write and evicts oldest-by-mtime — fine for the "cache everything" default; if huge caps + high write rates ever matter, swap in an in-memory index (deliberately not built now).
+- **Verification boundary (CI vs operator).** CI tests the cache **without any Wine/PulseAudio**: `test/cache.test.ts` covers `keyFor` stability + **differs by voice**, `set`→`get` byte-exact round-trip, absent key → `null`, **persistence across restart** (a fresh `TtsCache` over the same dir reads a prior entry), and cap eviction; `test/server.test.ts` drives the `/tts` hit/miss flow with an **injected `cacheDir` + fake bridge** (first → `cache:'miss'`, identical second → `cache:'hit'` with a byte-identical body and no bridge cost, a different voice → a separate-key miss). The **operator** verifies the parts CI cannot reproduce: the named volume survives `docker compose down && up` (the startup `[cache] N entries, M on disk` count reflects prior entries), and the second Speak of a phrase is near-instant with clean, identical audio (no first-Speak clip on the cached path).
+- **No third-party IP.** No Microsoft/L&H binaries, `.acs` files, or Wine prefix are involved; the cache stores only synthesized response bytes the user's own engine produced.
+
+## Related
+- ADR-0023 — the single-pass capture that set the ~3.3s real-time floor this cycle caches around; a HIT bypasses that live-capture path entirely (so it also can't show the Cycle-11 first-Speak clip).
+- `docs/cycles/cycle-12-tts-cache.md` — the cycle this ADR records, including the acceptance check and operator verification steps.

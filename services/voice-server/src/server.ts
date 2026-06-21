@@ -23,6 +23,7 @@ import {
   type TrimOptions,
 } from './wav.js';
 import { CaptureSource } from './capture.js';
+import { TtsCache, keyFor } from './cache.js';
 
 export interface SynthRequest {
   text: string;
@@ -48,6 +49,16 @@ export interface ServerOptions {
   bridgeTimeoutMs?: number;
   /** Cycle 10: per-request latency breakdown hook (also logged). Injectable for tests. */
   onTiming?: (timing: TtsTiming) => void;
+  /**
+   * Cycle 12: disk-persistent TTS cache directory. When set (or VIVIFY_CACHE_DIR is), every
+   * synthesized response is cached to disk keyed by hash(text+voice) and repeats are served from
+   * disk in tens of ms. Unset (the default) disables caching entirely (Cycle 11 behavior).
+   */
+  cacheDir?: string;
+  /** Cycle 12: optional cap on cache entries; oldest-by-mtime evicted on write. Unbounded if unset. */
+  cacheMaxEntries?: number;
+  /** Cycle 12: optional cap on total cache bytes; oldest-by-mtime evicted on write. Unbounded if unset. */
+  cacheMaxBytes?: number;
 }
 
 // Cycle 11: operator-tunable trim knobs (no rebuild to dial in the leading-edge alignment). If a
@@ -78,6 +89,25 @@ const DEFAULT_CAPTURE_GRACE = Number(process.env.VIVIFY_CAPTURE_GRACE_MS ?? 200)
 const DEFAULT_CAPTURE_READY = Number(process.env.VIVIFY_CAPTURE_READY_MS ?? 5_000);
 const DEFAULT_MAX_BODY = 1_000_000;
 const DEFAULT_BRIDGE_TIMEOUT = Number(process.env.VIVIFY_SAPI4_TIMEOUT_MS ?? 120_000);
+// Cycle 12: disk cache. Unset VIVIFY_CACHE_DIR → caching disabled (Cycle 11 behavior); the
+// container sets it (Dockerfile ENV → /var/cache/vivify-tts on a named volume). Caps default to
+// 0 = unbounded ("cache everything"); set the env knobs to evict oldest-by-mtime on write.
+const DEFAULT_CACHE_DIR = process.env.VIVIFY_CACHE_DIR;
+const DEFAULT_CACHE_MAX_ENTRIES = Number(process.env.VIVIFY_CACHE_MAX_ENTRIES ?? 0);
+const DEFAULT_CACHE_MAX_BYTES = Number(process.env.VIVIFY_CACHE_MAX_BYTES ?? 0);
+
+/** Human-readable byte size for the `[cache]` startup log (e.g. `12.3 MB`). */
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let v = bytes / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i += 1;
+  }
+  return `${v.toFixed(1)} ${units[i]}`;
+}
 
 // Permissive CORS so a browser app (e.g. mash on any localhost dev port) can call
 // the service. We REFLECT the request Origin rather than hardcoding one — Vite may
@@ -108,6 +138,18 @@ function sendJson(
   const payload = JSON.stringify(body);
   res.writeHead(status, { 'content-type': 'application/json', ...cors });
   res.end(payload);
+}
+
+// Cycle 12: write an already-serialized JSON body (the cached payload bytes) verbatim — a cache
+// hit reads the stored file and sends it without parsing/re-stringifying.
+function sendRawJson(
+  res: ServerResponse,
+  status: number,
+  body: Buffer,
+  cors: Record<string, string>,
+): void {
+  res.writeHead(status, { 'content-type': 'application/json', ...cors });
+  res.end(body);
 }
 
 interface SynthResult {
@@ -285,6 +327,29 @@ export function createVoiceServer(opts: ServerOptions = {}): Server {
   const bridgeTimeoutMs = opts.bridgeTimeoutMs ?? DEFAULT_BRIDGE_TIMEOUT;
   const trim = trimOptionsFromEnv();
 
+  // Cycle 12: disk cache (null when no dir is configured → caching disabled). Init creates the
+  // dir and logs how much is already on disk; failure is non-fatal (get→miss, set→swallowed).
+  const cacheDir = opts.cacheDir ?? DEFAULT_CACHE_DIR;
+  const cache = cacheDir
+    ? new TtsCache({
+        dir: cacheDir,
+        maxEntries: opts.cacheMaxEntries ?? DEFAULT_CACHE_MAX_ENTRIES,
+        maxBytes: opts.cacheMaxBytes ?? DEFAULT_CACHE_MAX_BYTES,
+      })
+    : null;
+  if (cache) {
+    void cache
+      .init()
+      .then((s) =>
+        console.log(`[cache] ${s.entries} entries, ${formatBytes(s.bytes)} on disk (${cacheDir})`),
+      )
+      .catch((err: unknown) =>
+        console.warn(
+          `[cache] init failed (requests still served, repeats won't be cached this boot): ${err instanceof Error ? err.message : String(err)}`,
+        ),
+      );
+  }
+
   // ONE persistent capture reader for the server's lifetime — no per-request `parec` spawn.
   const source = new CaptureSource({
     command: captureCommand,
@@ -333,8 +398,75 @@ export function createVoiceServer(opts: ServerOptions = {}): Server {
             sendJson(res, 400, { error: 'field "text" (non-empty string) is required' }, cors);
             return;
           }
-          // Serialize so only ONE capture window is open at a time (the persistent source is
-          // shared); also removes any warmup-vs-first-request race.
+          const text = parsed.text;
+          const voice = parsed.voice ?? {};
+
+          // Cycle 12: serve a repeat from disk. A hit reads the stored payload and sends it
+          // verbatim — no synthesis, no capture window, no mutex — so it's instant AND concurrent
+          // (it never queues behind an in-flight synthesis). Emit a `cache=HIT` timing so the
+          // operator SEES the speedup. See docs/cycles/cycle-12-tts-cache.md.
+          const cacheKey = cache ? keyFor(text, voice) : '';
+          // `diskReadMs` is just the file read; `totalMs` is request→now. On the PRE-mutex hit
+          // path these are both tiny. On the in-mutex re-check path (below), `totalMs` also
+          // includes the time queued behind the in-flight synthesis, so a `cache=HIT` line can
+          // show a small diskRead but a larger total — that wait is real, not a slow read.
+          const sendCacheHit = (hit: Buffer, diskReadMs: number): void => {
+            const timing: TtsTiming = {
+              bridgeMs: 0,
+              wineLoadMs: 0,
+              windowFirstByteMs: 0,
+              buildMs: 0,
+              encodeMs: 0,
+              totalMs: Date.now() - tReq,
+              bridge: null,
+              cache: 'hit',
+              diskReadMs,
+            };
+            console.log(
+              `[tts-timing] cache hit, ${hit.length}B payload | ${formatTtsTiming(timing)}`,
+            );
+            opts.onTiming?.(timing);
+            sendRawJson(res, 200, hit, cors);
+          };
+          if (cache) {
+            const tRead = Date.now();
+            const hit = await cache.get(cacheKey);
+            if (hit) {
+              sendCacheHit(hit, Date.now() - tRead);
+              return;
+            }
+          }
+
+          // Miss. Synthesize under the mutex (only ONE capture window open at a time — the
+          // persistent source is shared). A second cache.get inside the mutex guards the double-
+          // synth race: two identical requests can both miss above, but the second now hits the
+          // entry the first just wrote instead of re-synthesizing.
+          const outcome = await runExclusive(
+            async (): Promise<
+              | { kind: 'hit'; hit: Buffer; diskReadMs: number }
+              | { kind: 'synth'; synth: SynthResult }
+            > => {
+              if (cache) {
+                const tRead = Date.now();
+                const hit = await cache.get(cacheKey);
+                if (hit) return { kind: 'hit', hit, diskReadMs: Date.now() - tRead };
+              }
+              const synth = await synthesize(
+                source,
+                bridgeCommand,
+                text,
+                voice,
+                bridgeTimeoutMs,
+                captureGraceMs,
+                trim,
+              );
+              return { kind: 'synth', synth };
+            },
+          );
+          if (outcome.kind === 'hit') {
+            sendCacheHit(outcome.hit, outcome.diskReadMs);
+            return;
+          }
           const {
             wav,
             timeline,
@@ -345,17 +477,7 @@ export function createVoiceServer(opts: ServerOptions = {}): Server {
             buildMs,
             rawCaptureMs,
             wavMs,
-          } = await runExclusive(() =>
-            synthesize(
-              source,
-              bridgeCommand,
-              parsed.text,
-              parsed.voice ?? {},
-              bridgeTimeoutMs,
-              captureGraceMs,
-              trim,
-            ),
-          );
+          } = outcome.synth;
           const mouthTimeline = parseTimeline(timeline);
           const tEncode = Date.now();
           const audioWavBase64 = wav.toString('base64');
@@ -372,6 +494,7 @@ export function createVoiceServer(opts: ServerOptions = {}): Server {
             encodeMs,
             totalMs: Date.now() - tReq,
             bridge: parseBridgeTiming(stderr),
+            cache: cache ? 'miss' : undefined,
           };
           console.log(
             `[tts-timing] ${mouthTimeline.length} events, ${wav.length}B wav | ${formatTtsTiming(timing)}`,
@@ -386,16 +509,20 @@ export function createVoiceServer(opts: ServerOptions = {}): Server {
           );
           opts.onTiming?.(timing);
 
-          sendJson(
-            res,
-            200,
-            {
-              audioWavBase64,
-              mouthTimeline,
-              format: 'wav',
-            },
-            cors,
-          );
+          // Cycle 12: build the response body ONCE, write it to the cache (best-effort — a write
+          // failure is logged but never fails the request), and send the same bytes. The stored
+          // file IS the response payload, so a future hit needs zero recomputation.
+          const payload = JSON.stringify({ audioWavBase64, mouthTimeline, format: 'wav' });
+          if (cache) {
+            void cache
+              .set(cacheKey, payload)
+              .catch((err: unknown) =>
+                console.warn(
+                  `[cache] write failed (response still returned): ${err instanceof Error ? err.message : String(err)}`,
+                ),
+              );
+          }
+          sendRawJson(res, 200, Buffer.from(payload), cors);
           return;
         }
         sendJson(res, 404, { error: 'not found' }, cors);

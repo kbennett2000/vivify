@@ -29,3 +29,13 @@ services:
     image: vivify-voice
     ports:
       - '8080:8080'
+    # Cycle 12: disk-persistent TTS cache. The container caches every synthesized phrase to
+    # /var/cache/vivify-tts (set by the image's VIVIFY_CACHE_DIR), keyed by hash(text+voice), so
+    # repeats are served from disk in tens of ms. This named volume keeps the cache on the host so
+    # it SURVIVES `docker compose down && up` (rebuild/recreate). `docker compose down -v` wipes it.
+    volumes:
+      - vivify-tts-cache:/var/cache/vivify-tts
+
+# Cycle 12: declared named volume backing the voice cache above (see ADR-0024).
+volumes:
+  vivify-tts-cache:
