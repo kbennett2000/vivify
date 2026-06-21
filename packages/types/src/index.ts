@@ -88,12 +88,36 @@ export interface FrameBranch {
 }
 
 /**
- * Lip-sync overlay info for a frame. Modeled in Cycle 1/6; preserved as an
- * open structure here so the parser can attach mouth-state data without the
- * contract changing shape. `raw` keeps anything not yet explicitly modeled.
+ * One mouth-overlay entry on a frame: a mouth-shape image (an index into
+ * CharacterModel.images) composited at an offset during lip-sync. Decoded from
+ * the .acs 14-byte overlay record (Cycle 2 captured these losslessly; Cycle 6
+ * structured them — ADR-0010). `type` is the engine's mouth-shape id for the
+ * overlay; the remaining fields are preserved verbatim from the format.
+ */
+export interface FrameMouthOverlay {
+  /** Mouth-shape id for this overlay (raw .acs `type`). */
+  type: number;
+  /** Whether the overlay replaces (vs. blends over) the base pixels. */
+  replaceFlag: boolean;
+  /** Index into CharacterModel.images for the mouth-shape image. */
+  imageIndex: number;
+  /** Compositing offset. */
+  x: number;
+  y: number;
+  /** Region flag, preserved from the format. */
+  rgnFlag: number;
+  /** Scale factors, preserved from the format (often unused). */
+  scaleX: number;
+  scaleY: number;
+}
+
+/**
+ * Lip-sync overlay info for a frame: the set of mouth-shape overlays the engine
+ * can composite while speaking. Cycle 6 drives one of these per the voice
+ * timeline (ADR-0010). Empty/absent means the frame carries no mouth overlay.
  */
 export interface MouthOverlay {
-  raw?: Record<string, unknown>;
+  overlays: FrameMouthOverlay[];
 }
 
 export interface SoundModel {
@@ -129,8 +153,14 @@ export interface VoiceConfig {
 export interface MouthEvent {
   /** Time of this mouth event, in milliseconds from the start of the audio. */
   timeMs: number;
-  /** Viseme / mouth-shape id (or mouth-height). Provider-defined scale. */
+  /** Mouth HEIGHT (SAPI4 TTSMOUTH bMouthHeight, ~0..255). Named `shape` for back-compat. */
   shape: number;
+  /**
+   * Mouth WIDTH (SAPI4 TTSMOUTH bMouthWidth, ~0..255). Optional: present from the
+   * TruVoice server; absent for fallback providers. Together with `shape` (height) it
+   * selects the AgentMouthOverlay type via the authentic VoiceMouthOverlay mapping.
+   */
+  width?: number;
 }
 
 export interface TtsResult {
@@ -141,5 +171,10 @@ export interface TtsResult {
 }
 
 export interface TtsProvider {
-  speak(text: string, voice: VoiceConfig): Promise<TtsResult>;
+  /**
+   * Synthesize `text` with the character's voice. `signal`, if given, aborts the
+   * in-flight synthesis (e.g. when the engine is stopped mid-utterance) — the
+   * returned promise should reject on abort.
+   */
+  speak(text: string, voice: VoiceConfig, signal?: AbortSignal): Promise<TtsResult>;
 }

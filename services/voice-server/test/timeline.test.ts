@@ -1,37 +1,49 @@
 // Cycle 5 acceptance (docs/cycles/cycle-5-voice.md → "What is verified where",
 // CI bullet): "timeline→MouthEvent[] parsing". parseTimeline is the tolerant
 // normalizer from the bridge's timeline JSON to the engine-facing MouthEvent[].
-// It must keep only {timeMs, shape} when both are finite numbers, drop junk
-// entries, ignore extra fields, and return [] for anything malformed.
+// It must keep {timeMs, shape} when both are finite numbers — plus `width` from
+// the bridge's nested `mouth.width` when present — drop junk entries, ignore the
+// other extra fields, and return [] for anything malformed.
 
 import { describe, it, expect } from 'vitest';
 import type { MouthEvent } from '@vivify/types';
 import { parseTimeline } from '../src/timeline.js';
 
 describe('parseTimeline', () => {
-  it('maps valid events to MouthEvent[] keeping only timeMs + shape', () => {
+  it('maps valid events to MouthEvent[], carrying mouth.width as width when present', () => {
     const raw = {
       events: [
-        { timeMs: 0, shape: 0, phoneme: 0, mouth: { height: 0 } },
-        { timeMs: 50, shape: 5, phoneme: 65, mouth: { height: 5 } },
+        { timeMs: 0, shape: 0, phoneme: 0, mouth: { height: 0, width: 0 } },
+        { timeMs: 50, shape: 5, phoneme: 65, mouth: { height: 5, width: 3 } },
         { timeMs: 120, shape: 2 },
       ],
     };
     const expected: MouthEvent[] = [
-      { timeMs: 0, shape: 0 },
-      { timeMs: 50, shape: 5 },
+      { timeMs: 0, shape: 0, width: 0 },
+      { timeMs: 50, shape: 5, width: 3 },
       { timeMs: 120, shape: 2 },
     ];
     expect(parseTimeline(raw)).toEqual(expected);
   });
 
-  it('ignores extra fields (phoneme/mouth) on otherwise-valid entries', () => {
+  it('keeps mouth.width as width but ignores the other extra fields (phoneme/height/upturn)', () => {
     const result = parseTimeline({
-      events: [{ timeMs: 10, shape: 3, phoneme: 'AA', mouth: { height: 7, width: 2 } }],
+      events: [{ timeMs: 10, shape: 3, phoneme: 'AA', mouth: { height: 7, width: 2, upturn: 1 } }],
     });
-    expect(result).toEqual([{ timeMs: 10, shape: 3 }]);
-    // Confirm the extras really are stripped, not merely deep-equal-ignored.
-    expect(Object.keys(result[0] as object).sort()).toEqual(['shape', 'timeMs']);
+    expect(result).toEqual([{ timeMs: 10, shape: 3, width: 2 }]);
+    // Confirm the non-width extras really are stripped, not merely deep-equal-ignored.
+    expect(Object.keys(result[0] as object).sort()).toEqual(['shape', 'timeMs', 'width']);
+  });
+
+  it('omits width when the entry carries no mouth.width', () => {
+    // No `mouth` at all.
+    const bare = parseTimeline({ events: [{ timeMs: 10, shape: 3 }] });
+    expect(bare).toEqual([{ timeMs: 10, shape: 3 }]);
+    expect('width' in (bare[0] as object)).toBe(false);
+    // A `mouth` object that lacks `width`.
+    const noWidth = parseTimeline({ events: [{ timeMs: 10, shape: 3, mouth: { height: 7 } }] });
+    expect(noWidth).toEqual([{ timeMs: 10, shape: 3 }]);
+    expect('width' in (noWidth[0] as object)).toBe(false);
   });
 
   it('drops entries with a non-numeric timeMs', () => {

@@ -12,6 +12,7 @@ import type {
   FrameBranch,
   FrameImage,
   FrameModel,
+  FrameMouthOverlay,
   ImageModel,
   Rgb,
   SoundModel,
@@ -280,10 +281,10 @@ function readFrame(r: BinaryReader): FrameModel {
     branches.push({ frameIndex: packed & 0xffff, probability });
   }
 
-  // Mouth overlays (lip-sync): captured losslessly into mouth.raw; structured
-  // modeling is Cycle 6 (ADR-0010).
+  // Mouth overlays (lip-sync): structured per ADR-0010 (Cycle 6). Each 14-byte
+  // record is a mouth-shape image (imageIndex) the engine composites at (x,y).
   const overlayCount = r.u8();
-  const overlays: Array<Record<string, unknown>> = [];
+  const overlays: FrameMouthOverlay[] = [];
   for (let o = 0; o < overlayCount; o++) {
     const type = r.u8();
     const replaceFlag = r.u8() !== 0;
@@ -292,9 +293,9 @@ function readFrame(r: BinaryReader): FrameModel {
     const rgnFlag = r.u8();
     const x = r.i16();
     const y = r.i16();
-    const sx = r.i16();
-    const sy = r.i16();
-    overlays.push({ type, replaceFlag, imageIndex, x, y, rgnFlag, s: [sx, sy] });
+    const scaleX = r.i16();
+    const scaleY = r.i16();
+    overlays.push({ type, replaceFlag, imageIndex, x, y, rgnFlag, scaleX, scaleY });
   }
 
   const frame: FrameModel = {
@@ -304,7 +305,7 @@ function readFrame(r: BinaryReader): FrameModel {
   };
   if (exitFrame >= 0) frame.exitFrame = exitFrame;
   if (soundNdx >= 0) frame.soundIndex = soundNdx;
-  if (overlays.length > 0) frame.mouth = { raw: { overlays } };
+  if (overlays.length > 0) frame.mouth = { overlays };
   return frame;
 }
 

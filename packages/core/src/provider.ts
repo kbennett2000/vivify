@@ -10,7 +10,7 @@ import type { TtsProvider, TtsResult, VoiceConfig } from '@vivify/types';
  * engine be exercised end-to-end without a real voice backend (Cycle 0).
  */
 export class StubTtsProvider implements TtsProvider {
-  async speak(_text: string, _voice: VoiceConfig): Promise<TtsResult> {
+  async speak(_text: string, _voice: VoiceConfig, _signal?: AbortSignal): Promise<TtsResult> {
     return { audio: new ArrayBuffer(0), mouthTimeline: [] };
   }
 }

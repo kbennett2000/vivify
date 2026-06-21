@@ -16,7 +16,7 @@ const hangBridgePath = fileURLToPath(new URL('./hang-bridge.mjs', import.meta.ur
 
 interface TtsResponse {
   audioWavBase64: string;
-  mouthTimeline: Array<{ timeMs: number; shape: number }>;
+  mouthTimeline: Array<{ timeMs: number; shape: number; width?: number }>;
   format: string;
 }
 
@@ -81,11 +81,13 @@ describe('voice-server HTTP layer (fake bridge)', () => {
     expect(wav.toString('ascii', 0, 4)).toBe('RIFF');
     expect(wav.toString('ascii', 8, 12)).toBe('WAVE');
 
-    // mouthTimeline is the bridge's 3 canned events, normalized to {timeMs, shape}.
+    // mouthTimeline is the bridge's 3 canned events, normalized to {timeMs, shape,
+    // width} — the mouth WIDTH (from the bridge's nested mouth.width) is now carried
+    // for the authentic VoiceMouthOverlay(height,width) mapping.
     expect(json.mouthTimeline).toEqual([
-      { timeMs: 0, shape: 0 },
-      { timeMs: 50, shape: 5 },
-      { timeMs: 120, shape: 2 },
+      { timeMs: 0, shape: 0, width: 0 },
+      { timeMs: 50, shape: 5, width: 3 },
+      { timeMs: 120, shape: 2, width: 4 },
     ]);
   });
 
@@ -199,5 +201,50 @@ describe('voice-server bridge timeout', () => {
     });
     expect(res.status).toBe(500);
     expect(((await res.json()) as { error: string }).error).toContain('timed out');
+  });
+});
+
+describe('voice-server CORS (browser access)', () => {
+  let server: Server;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    server = createVoiceServer({ bridgeCommand: `node ${fakeBridgePath}` });
+    const port = await listenOnEphemeralPort(server);
+    baseUrl = `http://127.0.0.1:${port}`;
+  });
+
+  afterAll(async () => {
+    await closeServer(server);
+  });
+
+  it('OPTIONS preflight reflects the request Origin (any localhost port) → 204', async () => {
+    const origin = 'http://localhost:5174'; // Vite's "next free port" — must not be hardcoded away
+    const res = await fetch(`${baseUrl}/tts`, {
+      method: 'OPTIONS',
+      headers: {
+        origin,
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'content-type',
+      },
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-origin')).toBe(origin);
+    expect(res.headers.get('access-control-allow-methods')).toContain('POST');
+    expect(res.headers.get('access-control-allow-headers')).toContain('content-type');
+  });
+
+  it('reflects the Origin on a normal response and sets Vary: Origin', async () => {
+    const origin = 'http://localhost:61234';
+    const res = await fetch(`${baseUrl}/health`, { headers: { origin } });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('access-control-allow-origin')).toBe(origin);
+    expect(res.headers.get('vary')).toContain('Origin');
+  });
+
+  it('falls back to * when there is no Origin (curl / same-origin)', async () => {
+    const res = await fetch(`${baseUrl}/health`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('access-control-allow-origin')).toBe('*');
   });
 });

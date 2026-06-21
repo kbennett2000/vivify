@@ -10,7 +10,7 @@ export interface BridgeMouthEvent {
   timeMs: number;
   shape: number;
   phoneme?: string;
-  mouth?: Record<string, number>;
+  mouth?: { height?: number; width?: number; upturn?: number };
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -28,13 +28,19 @@ export function parseTimeline(raw: unknown): MouthEvent[] {
     if (!record) continue;
     const timeMs = record.timeMs;
     const shape = record.shape;
+    // Mouth WIDTH lives under the bridge's nested `mouth.width`; carry it for the
+    // authentic VoiceMouthOverlay(height,width) mapping (height == top-level `shape`).
+    const mouth = asRecord(record.mouth);
+    const width = mouth?.width;
     if (
       typeof timeMs === 'number' &&
       Number.isFinite(timeMs) &&
       typeof shape === 'number' &&
       Number.isFinite(shape)
     ) {
-      out.push({ timeMs, shape });
+      const event: MouthEvent = { timeMs, shape };
+      if (typeof width === 'number' && Number.isFinite(width)) event.width = width;
+      out.push(event);
     }
   }
   return out;

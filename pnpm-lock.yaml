@@ -35,6 +35,9 @@ importers:
       '@vivify/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@vivify/voice-truvoice':
+        specifier: workspace:*
+        version: link:../../packages/voice-truvoice
     devDependencies:
       vite:
         specifier: ^6.0.5
@@ -74,7 +77,15 @@ importers:
 
   packages/types: {}
 
-  packages/voice-truvoice: {}
+  packages/voice-truvoice:
+    dependencies:
+      '@vivify/types':
+        specifier: workspace:*
+        version: link:../types
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.2
+        version: 22.20.0
 
   services/voice-server:
     dependencies:

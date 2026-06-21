@@ -9,6 +9,7 @@ const css = (c: Rgb): string => `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
 
 export class Balloon {
   readonly el: HTMLDivElement;
+  private words: string[] = [];
 
   constructor(
     private readonly cfg: BalloonConfig,
@@ -32,8 +33,23 @@ export class Balloon {
   }
 
   setText(text: string): void {
+    this.words = text.split(/\s+/).filter((w) => w.length > 0);
+    this.renderWords(this.words.length);
+  }
+
+  /**
+   * Reveal the first `fraction` (0–1) of the words, for word-by-word sync to the
+   * audio timeline during speech. `setText` shows all words; this narrows it.
+   */
+  revealFraction(fraction: number): void {
+    const clamped = Math.max(0, Math.min(1, fraction));
+    this.renderWords(Math.ceil(clamped * this.words.length));
+  }
+
+  private renderWords(count: number): void {
+    const shown = this.words.slice(0, Math.max(0, count)).join(' ');
     const lines = wrapText(
-      text,
+      shown,
       this.cfg.charsPerLine > 0 ? this.cfg.charsPerLine : 32,
       this.cfg.numLines > 0 ? this.cfg.numLines : undefined,
     );
