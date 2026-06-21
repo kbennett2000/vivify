@@ -1,0 +1,128 @@
+/* Clean, lightly era-appropriate (Win9x-ish) styling. Intentionally simple. */
+:root {
+  --face: #c0c0c0;
+  --shadow: #808080;
+  --light: #ffffff;
+  --accent: #000080;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  padding: 24px;
+  font:
+    13px Tahoma,
+    'MS Sans Serif',
+    Verdana,
+    sans-serif;
+  background: #008080;
+  color: #000;
+}
+.window {
+  max-width: 880px;
+  margin: 0 auto;
+  background: var(--face);
+  border: 2px solid;
+  border-color: var(--light) var(--shadow) var(--shadow) var(--light);
+  padding: 2px;
+}
+.titlebar {
+  background: linear-gradient(90deg, var(--accent), #1084d0);
+  color: #fff;
+  font-weight: bold;
+  padding: 4px 8px;
+}
+.titlebar .sub {
+  font-weight: normal;
+  opacity: 0.85;
+  font-size: 11px;
+}
+.toolbar,
+.speakbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 10px;
+}
+.toolbar .sep {
+  color: var(--shadow);
+}
+.controls {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+}
+button {
+  font: inherit;
+  padding: 3px 10px;
+  background: var(--face);
+  border: 2px solid;
+  border-color: var(--light) var(--shadow) var(--shadow) var(--light);
+  cursor: pointer;
+}
+button:active {
+  border-color: var(--shadow) var(--light) var(--light) var(--shadow);
+}
+select,
+input[type='text'] {
+  font: inherit;
+  padding: 3px;
+  border: 2px inset var(--face);
+  background: #fff;
+}
+input[type='text'] {
+  flex: 1;
+}
+.dropzone {
+  position: relative;
+  margin: 0 10px;
+  min-height: 280px;
+  background: #fff;
+  border: 2px inset var(--face);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.dropzone.over {
+  outline: 3px dashed var(--accent);
+  outline-offset: -6px;
+}
+.stage {
+  position: relative;
+  width: 100%;
+  height: 280px;
+}
+.hint {
+  position: absolute;
+  bottom: 6px;
+  width: 100%;
+  text-align: center;
+  color: var(--shadow);
+  pointer-events: none;
+  margin: 0;
+}
+.status {
+  padding: 6px 12px;
+  color: var(--accent);
+  min-height: 1.4em;
+}
+h2 {
+  font-size: 13px;
+  margin: 6px 12px;
+}
+.anim-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 4px;
+  padding: 0 10px 12px;
+  max-height: 260px;
+  overflow: auto;
+}
+.anim {
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
