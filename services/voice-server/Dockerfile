@@ -14,8 +14,11 @@
 FROM debian:bookworm-slim
 
 # 32-bit Wine + Xvfb (SAPI4/TruVoice are 32-bit; the bridge needs a display) + build + Node.
+# xauth is required by the `xvfb-run` wrapper; it's a *recommended* dep of xvfb that
+# --no-install-recommends drops, so it must be named explicitly or xvfb-run fails with
+# "xauth command not found". (mcookie, the wrapper's other dep, is in the base image.)
 RUN dpkg --add-architecture i386 && apt-get update && apt-get install -y --no-install-recommends \
-      wine wine32 xvfb winbind cabextract ca-certificates \
+      wine wine32 xvfb xauth winbind cabextract ca-certificates \
       gcc-mingw-w64-i686 g++-mingw-w64-i686 \
       curl gnupg \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
