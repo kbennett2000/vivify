@@ -212,6 +212,20 @@ for the same phrase with `teardown=0` held — the per-request `parec` spawn was
 removed by the persistent windowed source; and `[tts-audio] wavMs=2983 timelineMs=2212 trimmedMs=284`
 isolated the first-Speak clip to the trim.
 
+## First-Speak clip — the real root cause (proved by the boot log, not theorized)
+The first Speak kept clipping through several rounds (trim loosening, then a `whenLive` warmup gate). The
+warmup gate's instrumentation finally PROVED the cause: at boot the log printed `[warmup] failed … null-sink
+capture window was empty` BEFORE `[capture] persistent monitor reader is live`. That ordering means the
+null-sink `.monitor` emits **no samples until something is actually playing into the sink** — `parec`
+connects but stays silent until the warmup's own playback wakes the sink, so the warmup's window was empty
+and the first real Speak ate the cold first window. (Not `module-suspend-on-idle` — the config loads none;
+a null sink with no active sink-input simply doesn't RUN.) **Fix (entrypoint + pulse only):** `entrypoint.sh`
+now keeps a continuous stream of digital silence (`pacat … /dev/zero`) playing into `dummy`, holding the
+sink RUNNING so its monitor streams from boot. Zeros add nothing to the mix → captured speech is identical;
+`trimLeadingSilence` drops the idle silence. The `whenLive` warmup gate is retained (it now resolves
+immediately). No `src/`, latency, or trim change. See ADR-0023 Decision 12. No CI surface (fakes can't
+reproduce pulse suspend semantics); operator-verified by the boot-log ordering below.
+
 ## What is verified where
 - **CI (this repo, no Wine/PA):** `wrapPcmToWav` + `trimLeadingSilence` unit tests; a server test with an
   injected `captureCommand` (fake-capture emits leading-silence + tone PCM) + timeline-only fake-bridge →

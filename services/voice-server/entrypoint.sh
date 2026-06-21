@@ -31,6 +31,26 @@ else
   echo "WARN: pulse socket /tmp/pulse-socket not present after wait" >&2
 fi
 
+# --- continuous silent feed (Cycle 11) --------------------------------------
+# A null sink only RUNS (and its .monitor only streams) while something plays into it; with nothing
+# playing, parec on dummy.monitor gets no samples until the first real synth — so the capture reader
+# wasn't live until the first Speak, and that first window was the cold/clipped one (proved by the
+# operator's startup log: `[warmup] failed … window empty` printed BEFORE `[capture] … is live`).
+# Keep a continuous stream of digital silence (/dev/zero, raw s16le) playing into the sink so it's
+# always RUNNING and the monitor always streams, from boot. Zeros add nothing to the mix → captured
+# speech is byte-identical; the server's trimLeadingSilence drops the idle silence. Restart-looped so
+# a transient pulse hiccup can't permanently un-warm the capture path.
+if [ -S /tmp/pulse-socket ]; then
+  ( while true; do
+      pacat --playback --device=dummy --rate=44100 --channels=1 --format=s16le /dev/zero \
+        >/dev/null 2>&1
+      sleep 0.5
+    done ) &
+  echo "pulse: continuous silent feed into dummy started (monitor stays live)"
+else
+  echo "WARN: no pulse socket — skipping silent feed; capture monitor may stay idle until first play." >&2
+fi
+
 # NOTE (Cycle 11): the null-sink monitor reader is now owned by the SERVER — one persistent
 # `parec` for the container's lifetime, windowed per request (see CaptureSource in src/capture.ts).
 # That supersedes the earlier shell-level keep-warm reader: per-request `parec` spawn is gone, so
