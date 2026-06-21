@@ -1,10 +1,5 @@
-// MASH clone — showcase + dogfood of the @vivify/core public API.
-// Stub only; the character picker, animation grid, and type-to-balloon UI
-// land in Cycle 4.
+// MASH — the committed showcase + dogfood of @vivify/core's public API.
+import './styles.css';
+import { initApp } from './app.js';
 
-import { name } from '@vivify/core';
-
-const app = document.querySelector<HTMLDivElement>('#app');
-if (app) {
-  app.textContent = `vivify demo — powered by ${name} (scaffold stub)`;
-}
+initApp();

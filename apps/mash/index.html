@@ -3,10 +3,46 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>MASH — vivify demo</title>
+    <title>MASH — Microsoft Agent, alive in the browser</title>
   </head>
   <body>
-    <div id="app"></div>
+    <div class="window">
+      <div class="titlebar">
+        MASH — vivify demo <span class="sub">powered by @vivify/core (silent)</span>
+      </div>
+      <div class="toolbar">
+        <label class="field">
+          Built-in:
+          <select id="builtin" disabled></select>
+        </label>
+        <span class="sep">or</span>
+        <label class="field">
+          Upload .acs:
+          <input id="file" type="file" accept=".acs" />
+        </label>
+        <span class="controls">
+          <button id="showBtn" title="Show">Show</button>
+          <button id="hideBtn" title="Hide">Hide</button>
+          <button id="replayBtn" title="Replay last animation">Replay</button>
+          <button id="stopBtn" title="Stop / return to rest">Stop</button>
+        </span>
+      </div>
+
+      <div id="drop" class="dropzone">
+        <div id="stage" class="stage"></div>
+        <p class="hint">Drag &amp; drop a <code>.acs</code> file anywhere here</p>
+      </div>
+
+      <div class="speakbar">
+        <input id="speak" type="text" placeholder="Type something to say…" />
+        <button id="speakBtn">Speak</button>
+      </div>
+
+      <div id="status" class="status"></div>
+
+      <h2>Animations</h2>
+      <div id="animations" class="anim-grid"></div>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

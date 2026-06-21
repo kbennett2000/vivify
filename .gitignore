@@ -47,3 +47,5 @@ tools/oracle/
 packages/acs/scripts/out/
 # Cycle 3 local visual-confirmation harness (not the committed app — that's Cycle 4 MASH)
 packages/core/dev/
+# MASH built-in character bundles are LOCAL ONLY (user-supplied; never commit MS assets)
+apps/mash/public/characters/
