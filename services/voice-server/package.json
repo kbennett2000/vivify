@@ -3,9 +3,27 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "typecheck": "tsc --build --pretty",
+    "typecheck": "tsc --build --pretty && tsc -p tsconfig.test.json",
     "test": "vitest run --passWithNoTests",
+    "start": "node dist/main.js",
     "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@vivify/types": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2"
   }
 }

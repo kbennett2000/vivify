@@ -16,6 +16,19 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
+    // Node script files (e.g. the voice-server fake bridge) run under `node`.
+    files: ['**/*.mjs'],
+    languageOptions: {
+      globals: {
+        process: 'readonly',
+        Buffer: 'readonly',
+        console: 'readonly',
+        URL: 'readonly',
+        setInterval: 'readonly',
+      },
+    },
+  },
+  {
     rules: {
       // Allow intentionally-unused args/vars when prefixed with `_` (common in
       // interface-satisfying no-op stubs).
