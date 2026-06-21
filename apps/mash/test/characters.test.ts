@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import type { BuiltinCharacter } from '../src/characters.js';
-import { parseBuiltinIndex, builtinManifestUrl, isAcsFile } from '../src/characters.js';
+import {
+  parseBuiltinIndex,
+  builtinManifestUrl,
+  isAcsFile,
+  resolveVoiceServerUrl,
+  DEFAULT_VOICE_SERVER_URL,
+} from '../src/characters.js';
 
 // Tied to Cycle 4 (docs/cycles/cycle-4-mash.md): the MASH demo's built-in
 // character index must be parsed safely (ids can't escape /characters/<id>/),
@@ -108,6 +114,42 @@ describe('isAcsFile', () => {
 
   it('is false when a trailing space follows the extension', () => {
     expect(isAcsFile({ name: '.acs ' })).toBe(false);
+  });
+});
+
+// Tied to Cycle 9 (docs/cycles/cycle-9-dockerize-demo.md): the voice field is
+// pre-filled from resolveVoiceServerUrl(import.meta.env.VITE_VOICE_SERVER_URL),
+// so the helper must default on undefined/empty/whitespace and honor + trim a
+// real value (clearing the field goes silent via the empty -> default path the
+// caller then treats specially).
+
+describe('resolveVoiceServerUrl', () => {
+  it('exposes the documented default value', () => {
+    expect(DEFAULT_VOICE_SERVER_URL).toBe('http://localhost:8080');
+  });
+
+  it('falls back to the default for undefined', () => {
+    expect(resolveVoiceServerUrl(undefined)).toBe('http://localhost:8080');
+  });
+
+  it('falls back to the default for an empty string', () => {
+    expect(resolveVoiceServerUrl('')).toBe('http://localhost:8080');
+  });
+
+  it('falls back to the default for a whitespace-only string', () => {
+    expect(resolveVoiceServerUrl('   ')).toBe('http://localhost:8080');
+  });
+
+  it('returns a real URL unchanged', () => {
+    expect(resolveVoiceServerUrl('http://example.com:9999')).toBe('http://example.com:9999');
+  });
+
+  it('trims surrounding whitespace from a real URL', () => {
+    expect(resolveVoiceServerUrl('  http://example.com:9999  ')).toBe('http://example.com:9999');
+  });
+
+  it('uses DEFAULT_VOICE_SERVER_URL as the fallback', () => {
+    expect(resolveVoiceServerUrl(undefined)).toBe(DEFAULT_VOICE_SERVER_URL);
   });
 });
 
