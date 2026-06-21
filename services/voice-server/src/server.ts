@@ -15,7 +15,14 @@ import type { VoiceConfig } from '@vivify/types';
 import { voiceToBridgeArgs } from './voice-args.js';
 import { parseTimeline } from './timeline.js';
 import { parseBridgeTiming, formatTtsTiming, type TtsTiming } from './timing.js';
-import { wrapPcmToWav, trimLeadingSilence, wavDurationMs, DEFAULT_PCM_FORMAT } from './wav.js';
+import {
+  wrapPcmToWav,
+  trimLeadingSilence,
+  wavDurationMs,
+  DEFAULT_PCM_FORMAT,
+  type TrimOptions,
+} from './wav.js';
+import { CaptureSource } from './capture.js';
 
 export interface SynthRequest {
   text: string;
@@ -29,8 +36,12 @@ export interface ServerOptions {
   captureCommand?: string;
   /** Cycle 11: ms to keep recording after the bridge exits, so the audio tail isn't clipped. */
   captureGraceMs?: number;
-  /** Cycle 11 fix: fail if the capture hasn't produced its first sample within this many ms. */
+  /** Cycle 11: warn if the persistent capture source produces no sample within this many ms. */
   captureReadyTimeoutMs?: number;
+  /** Cycle 11: respawn the persistent capture reader if it dies (default true; tests disable it). */
+  captureRespawn?: boolean;
+  /** Cycle 11: run a background warmup synthesis when the server starts (default true; tests off). */
+  warmOnStart?: boolean;
   /** Cap on request body size (bytes). */
   maxBodyBytes?: number;
   /** Kill the bridge + fail the request if it runs longer than this (ms). */
@@ -39,21 +50,31 @@ export interface ServerOptions {
   onTiming?: (timing: TtsTiming) => void;
 }
 
+// Cycle 11: operator-tunable trim knobs (no rebuild to dial in the leading-edge alignment). If a
+// real opening consonant still clips or the audio leads the mouth, set these and re-run.
+function trimOptionsFromEnv(): TrimOptions {
+  const opts: TrimOptions = {};
+  const threshold = Number(process.env.VIVIFY_TRIM_THRESHOLD);
+  const leadInMs = Number(process.env.VIVIFY_TRIM_LEADIN_MS);
+  if (Number.isFinite(threshold) && process.env.VIVIFY_TRIM_THRESHOLD) opts.threshold = threshold;
+  if (Number.isFinite(leadInMs) && process.env.VIVIFY_TRIM_LEADIN_MS) opts.leadInMs = leadInMs;
+  return opts;
+}
+
 // Cycle 10: the engine is now WARMED at container start (persistent Xvfb + wineserver via
 // entrypoint.sh), so the per-request command is a plain `wine …` — no `xvfb-run -a`, which
 // spawned a fresh Xvfb and paid wineserver/wineboot cold-start on every /tts. Overridable
 // via VIVIFY_SAPI4_BRIDGE.
 const DEFAULT_BRIDGE = process.env.VIVIFY_SAPI4_BRIDGE ?? 'wine /opt/vivify/bridge/sapi4-mouth.exe';
-// Cycle 11: record the null sink's monitor as raw PCM (s16le/44100/mono — matches the pinned
-// null-sink format in pulse-null.pa, so no resampling). `--latency-msec=30` makes parec flush
-// small fragments immediately, so its first sample arrives in ~tens of ms and the capture-ready
-// gate (below) adds little latency. Overridable via VIVIFY_CAPTURE.
+// Cycle 11: the PERSISTENT capture source runs this once (s16le/44100/mono — matches the pinned
+// null-sink format in pulse-null.pa, so no resampling). `--latency-msec=30` keeps the stream
+// flushing promptly so a window's first chunk arrives in ~tens of ms. Overridable via VIVIFY_CAPTURE.
 const DEFAULT_CAPTURE =
   process.env.VIVIFY_CAPTURE ??
   'parec --device=dummy.monitor --format=s16le --rate=44100 --channels=1 --latency-msec=30';
 const DEFAULT_CAPTURE_GRACE = Number(process.env.VIVIFY_CAPTURE_GRACE_MS ?? 200);
-// Cycle 11 fix: synthesis is gated on the capture actually streaming; if parec produces no
-// sample within this window the request fails loudly (no clipped/faked audio). Overridable.
+// Cycle 11: how long after (re)starting the persistent reader to wait for its first sample before
+// warning that the null sink isn't streaming. (No longer a per-request gate.) Overridable.
 const DEFAULT_CAPTURE_READY = Number(process.env.VIVIFY_CAPTURE_READY_MS ?? 5_000);
 const DEFAULT_MAX_BODY = 1_000_000;
 const DEFAULT_BRIDGE_TIMEOUT = Number(process.env.VIVIFY_SAPI4_TIMEOUT_MS ?? 120_000);
@@ -99,12 +120,8 @@ interface SynthResult {
   bridgeMs: number;
   /** spawn → the bridge's first stderr byte (`[boot]`) ≈ the Wine process-load prologue, ms. */
   wineLoadMs: number;
-  /** Capture (parec) spawn → its first PCM sample — the readiness gate paid before synthesis, ms. */
-  captureReadyMs: number;
-  /** Capture (parec) wall time, ms. */
-  captureMs: number;
-  /** Stopping the capture (grace-end → parec 'close'), ms. */
-  captureStopMs: number;
+  /** Capture window first-byte latency (beginWindow → first buffered chunk), ms — now stable. */
+  windowFirstByteMs: number;
   /** Building the WAV (wrap + trim leading silence), ms. */
   buildMs: number;
   /** Audio duration of the raw captured PCM (before trim), ms — for the clip diagnostic. */
@@ -116,108 +133,28 @@ interface SynthResult {
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * One real-time synthesis pass. Starts the capture (records the null-sink monitor → raw PCM on
- * stdout) and WAITS until it's actually streaming before triggering synthesis, so the opening
- * audio can't be clipped by a capture-start race. Then runs the single-pass bridge (which plays
- * the utterance to that sink and writes the dense timeline), stops the capture, and wraps the
- * PCM into an aligned WAV. The capture is always torn down (no leaked recorder), even on failure.
+ * One real-time synthesis pass over the PERSISTENT capture source. Opens a capture window
+ * (the always-on `parec` is already streaming, so no per-request spawn / no readiness race),
+ * runs the single-pass bridge (which plays the utterance to the null sink and writes the dense
+ * timeline), then closes the window and wraps the captured PCM into an aligned WAV. The caller
+ * SERIALIZES calls so only one window is open at a time.
  */
 async function synthesize(
+  source: CaptureSource,
   bridgeCommand: string,
-  captureCommand: string,
   text: string,
   voice: VoiceConfig,
   timeoutMs: number,
   graceMs: number,
-  readyMs: number,
+  trim: TrimOptions,
 ): Promise<SynthResult> {
   const dir = await mkdtemp(join(tmpdir(), 'vivify-tts-'));
-
-  // --- start the capture FIRST and gate synthesis on it actually streaming ---
-  const capParts = captureCommand.split(/\s+/).filter(Boolean);
-  const capProgram = capParts[0];
-  if (!capProgram) throw new Error('voice-server: empty capture command');
-  const tCapture = Date.now();
-  const capture = spawn(capProgram, capParts.slice(1), { stdio: ['ignore', 'pipe', 'pipe'] });
-  const pcmChunks: Buffer[] = [];
-  let captureErr = '';
-  // Resolves on the FIRST captured sample (proof the null-sink monitor is open and flowing);
-  // rejects if no sample arrives within `readyMs` or the recorder dies first — a loud, honest
-  // failure rather than a clipped/silent WAV. The same handler collects every chunk.
-  let markReady: () => void;
-  let failReady: (err: Error) => void;
-  const captureReady = new Promise<void>((resolve, reject) => {
-    markReady = resolve;
-    failReady = reject;
-  });
-  // The real consumer is `await captureReady` below; this no-op handler just prevents an
-  // unhandled-rejection warning if it rejects during the async gap before that await.
-  void captureReady.catch(() => {});
-  let captureLive = false;
-  const readyTimer = setTimeout(() => {
-    failReady(
-      new Error(
-        `null-sink capture produced no sample within ${readyMs}ms — is the PulseAudio null sink ` +
-          `live and streaming to its monitor? (parec: ${captureErr.trim().slice(0, 200) || 'no stderr'})`,
-      ),
-    );
-  }, readyMs);
-  readyTimer.unref?.();
-  capture.stdout?.on('data', (chunk: Buffer) => {
-    pcmChunks.push(chunk);
-    if (!captureLive) {
-      captureLive = true;
-      clearTimeout(readyTimer);
-      markReady();
-    }
-  });
-  capture.stderr?.on('data', (chunk) => {
-    captureErr += String(chunk);
-  });
-  // Resolve on close OR error (spawn ENOENT emits 'error' without 'close'). If the recorder dies
-  // before producing a sample, fail the readiness gate too (don't wait out the whole timeout).
-  const captureClosed = new Promise<void>((resolve) => {
-    const onEnd = (): void => {
-      if (!captureLive) {
-        clearTimeout(readyTimer);
-        failReady(
-          new Error(
-            `capture process exited before producing audio (parec: ${captureErr.trim().slice(0, 200) || 'no stderr'})`,
-          ),
-        );
-      }
-      resolve();
-    };
-    capture.on('close', onEnd);
-    capture.on('error', onEnd);
-  });
-  let captureStopped = false;
-  const stopCapture = async (): Promise<void> => {
-    if (!captureStopped) {
-      captureStopped = true;
-      if (capture.exitCode === null && !capture.killed) {
-        capture.kill('SIGTERM');
-        // Escalate to SIGKILL if the recorder ignores SIGTERM, so a misbehaving `parec`
-        // can't hang the request waiting on `captureClosed`.
-        const killTimer = setTimeout(() => {
-          if (capture.exitCode === null) capture.kill('SIGKILL');
-        }, 2000);
-        killTimer.unref?.();
-        void captureClosed.then(() => clearTimeout(killTimer));
-      }
-    }
-    await captureClosed;
-  };
+  source.beginWindow();
 
   try {
     const textPath = join(dir, 'in.txt');
     const timelinePath = join(dir, 'out.json');
     await writeFile(textPath, text, 'utf8');
-
-    // GATE: don't synthesize until the capture is provably streaming, so the opening words
-    // can't be lost to a capture-start race. (Throws → 500 if the capture never goes live.)
-    await captureReady;
-    const captureReadyMs = Date.now() - tCapture;
 
     const parts = bridgeCommand.split(/\s+/).filter(Boolean);
     const program = parts[0];
@@ -282,24 +219,21 @@ async function synthesize(
     if (diag) console.log(`[bridge] ${diag}`);
     const wineLoadMs = firstByteAt ? firstByteAt - tSpawn : 0;
 
-    // Let the null sink flush the audio tail, then stop recording and assemble the WAV. (The bridge
-    // is resolved on `[timing]`, after AudioStop — all audio has already played — so the grace only
-    // covers the pulse buffer tail; stopping the recorder here loses nothing.)
+    // Let the null sink flush the audio tail, then close the window and assemble the WAV. (The
+    // bridge resolved on `[timing]`, after AudioStop — all audio has already played — so the grace
+    // only covers the pulse buffer tail; closing the window here loses nothing.)
     await delay(graceMs);
-    const tStop = Date.now();
-    await stopCapture();
-    const captureStopMs = Date.now() - tStop;
-    const captureMs = Date.now() - tCapture;
+    const { pcm, firstByteMs: windowFirstByteMs } = source.endWindow();
 
-    const pcm = Buffer.concat(pcmChunks);
     if (pcm.length === 0) {
-      // Honest failure — never return a silent/faked WAV (see cycle-11 doc).
+      // Honest failure — never return a silent/faked WAV. An empty window means the persistent
+      // monitor reader isn't streaming (dead/never-live) — surfaced loudly, not papered over.
       throw new Error(
-        `null-sink capture produced no audio (parec: ${captureErr.trim().slice(0, 200) || 'no stderr'})`,
+        'null-sink capture window was empty — is the persistent monitor reader live?',
       );
     }
     const tBuild = Date.now();
-    const wav = trimLeadingSilence(wrapPcmToWav(pcm));
+    const wav = trimLeadingSilence(wrapPcmToWav(pcm), trim);
     const buildMs = Date.now() - tBuild;
     if (wav.length <= 44) {
       throw new Error('null-sink capture was entirely silent — no audio aligned to the timeline');
@@ -316,15 +250,13 @@ async function synthesize(
       stderr,
       bridgeMs,
       wineLoadMs,
-      captureReadyMs,
-      captureMs,
-      captureStopMs,
+      windowFirstByteMs,
       buildMs,
       rawCaptureMs,
       wavMs,
     };
   } finally {
-    await stopCapture(); // backstop: never leak parec, even on the bridge-failure path
+    source.abortWindow(); // backstop: stop buffering on the failure path (the source lives on)
     await rm(dir, { recursive: true, force: true });
   }
 }
@@ -351,8 +283,30 @@ export function createVoiceServer(opts: ServerOptions = {}): Server {
   const captureReadyTimeoutMs = opts.captureReadyTimeoutMs ?? DEFAULT_CAPTURE_READY;
   const maxBodyBytes = opts.maxBodyBytes ?? DEFAULT_MAX_BODY;
   const bridgeTimeoutMs = opts.bridgeTimeoutMs ?? DEFAULT_BRIDGE_TIMEOUT;
+  const trim = trimOptionsFromEnv();
 
-  return createServer((req, res) => {
+  // ONE persistent capture reader for the server's lifetime — no per-request `parec` spawn.
+  const source = new CaptureSource({
+    command: captureCommand,
+    readyTimeoutMs: captureReadyTimeoutMs,
+    respawn: opts.captureRespawn,
+  });
+  source.start();
+
+  // Serialize /tts so capture windows never overlap (one window open at a time). Promise-chain
+  // mutex: each call runs after the previous settles (resolve OR reject), and the chain swallows
+  // so one failure can't wedge the queue. `runExclusive` returns the actual result/rejection.
+  let queue: Promise<unknown> = Promise.resolve();
+  const runExclusive = <T>(fn: () => Promise<T>): Promise<T> => {
+    const run = queue.then(fn, fn);
+    queue = run.then(
+      () => {},
+      () => {},
+    );
+    return run as Promise<T>;
+  };
+
+  const server = createServer((req, res) => {
     const cors = corsHeaders(req);
     void (async () => {
       try {
@@ -379,26 +333,28 @@ export function createVoiceServer(opts: ServerOptions = {}): Server {
             sendJson(res, 400, { error: 'field "text" (non-empty string) is required' }, cors);
             return;
           }
+          // Serialize so only ONE capture window is open at a time (the persistent source is
+          // shared); also removes any warmup-vs-first-request race.
           const {
             wav,
             timeline,
             stderr,
             bridgeMs,
             wineLoadMs,
-            captureReadyMs,
-            captureMs,
-            captureStopMs,
+            windowFirstByteMs,
             buildMs,
             rawCaptureMs,
             wavMs,
-          } = await synthesize(
-            bridgeCommand,
-            captureCommand,
-            parsed.text,
-            parsed.voice ?? {},
-            bridgeTimeoutMs,
-            captureGraceMs,
-            captureReadyTimeoutMs,
+          } = await runExclusive(() =>
+            synthesize(
+              source,
+              bridgeCommand,
+              parsed.text,
+              parsed.voice ?? {},
+              bridgeTimeoutMs,
+              captureGraceMs,
+              trim,
+            ),
           );
           const mouthTimeline = parseTimeline(timeline);
           const tEncode = Date.now();
@@ -407,13 +363,11 @@ export function createVoiceServer(opts: ServerOptions = {}): Server {
 
           // Cycle 10/11: per-request latency breakdown — server stages + the parsed bridge
           // stages — so we can SEE where the time goes (Wine load / engine init / Pass A
-          // real-time floor / teardown / capture). See timing.ts and the cycle-11 doc.
+          // real-time floor / teardown / window). See timing.ts and the cycle-11 doc.
           const timing: TtsTiming = {
             bridgeMs,
             wineLoadMs,
-            captureReadyMs,
-            captureMs,
-            captureStopMs,
+            windowFirstByteMs,
             buildMs,
             encodeMs,
             totalMs: Date.now() - tReq,
@@ -450,42 +404,67 @@ export function createVoiceServer(opts: ServerOptions = {}): Server {
       }
     })();
   });
+
+  // Tear the persistent reader down with the server (no leaked parec across test runs).
+  server.on('close', () => source.stop());
+
+  // Cycle 11: warm the WHOLE pipeline (winepulse playback + engine) by running one serialized
+  // synthesis through the persistent source at startup, so the FIRST real Speak isn't cold. It
+  // holds the mutex, so the first real request waits behind it. Best-effort. (Tests disable it.)
+  if (opts.warmOnStart !== false) {
+    void runExclusive(() =>
+      synthesize(source, bridgeCommand, 'warm up', {}, bridgeTimeoutMs, captureGraceMs, trim),
+    )
+      .then(() => console.log('[warmup] done'))
+      .catch((err: unknown) =>
+        console.warn(
+          `[warmup] failed (first real Speak may be colder): ${err instanceof Error ? err.message : String(err)}`,
+        ),
+      );
+  }
+
+  return server;
 }
 
 /**
- * Cycle 11 fix: prime the WHOLE capture pipeline once at startup — parec connect + the
- * null-sink monitor + winepulse playback + trim + the engine — by running one real synthesis.
- * The container's engine warmup (entrypoint) primed only the engine, so the FIRST real Speak
- * still cold-started the capture path and clipped its opening; this warms it via the exact
- * production path. Best-effort: failures only mean the first Speak runs colder, never a crash.
+ * Standalone warmup: prime the WHOLE pipeline once via a throwaway persistent source + one real
+ * synthesis — parec connect + null-sink monitor + winepulse playback + trim + the engine. Used by
+ * tests / manual runs; `createVoiceServer` self-warms its own source. Best-effort.
  */
 export async function warmUp(opts: ServerOptions = {}): Promise<void> {
+  const source = new CaptureSource({
+    command: opts.captureCommand ?? DEFAULT_CAPTURE,
+    readyTimeoutMs: opts.captureReadyTimeoutMs ?? DEFAULT_CAPTURE_READY,
+    respawn: false,
+  });
+  source.start();
   const t0 = Date.now();
   console.log('[warmup] priming capture + engine pipeline…');
   try {
     await synthesize(
+      source,
       opts.bridgeCommand ?? DEFAULT_BRIDGE,
-      opts.captureCommand ?? DEFAULT_CAPTURE,
       'warm up',
       {},
       opts.bridgeTimeoutMs ?? DEFAULT_BRIDGE_TIMEOUT,
       opts.captureGraceMs ?? DEFAULT_CAPTURE_GRACE,
-      opts.captureReadyTimeoutMs ?? DEFAULT_CAPTURE_READY,
+      trimOptionsFromEnv(),
     );
     console.log(`[warmup] done in ${Date.now() - t0}ms`);
   } catch (err) {
     console.warn(
       `[warmup] failed (first real Speak may be colder): ${err instanceof Error ? err.message : String(err)}`,
     );
+  } finally {
+    source.stop();
   }
 }
 
 export function start(port = Number(process.env.PORT ?? 8080), opts: ServerOptions = {}): Server {
+  // createVoiceServer starts the persistent capture source and self-warms in the background.
   const server = createVoiceServer(opts);
   server.listen(port, () => {
     console.log(`vivify voice-server listening on :${port}`);
-    // Background so /health is up immediately; the first real Speak lands after this completes.
-    void warmUp(opts);
   });
   return server;
 }

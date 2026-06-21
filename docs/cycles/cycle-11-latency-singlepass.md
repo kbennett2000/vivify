@@ -63,6 +63,30 @@ Fix (`src/server.ts`, `src/wav.ts`):
   rather than a clipped or faked WAV.
 - **Timing.** `[tts-timing]` now includes `captureReady=` (the gate paid before synthesis).
 
+### Fix: captureReady variance (per-request `parec` spawn → persistent windowed source)
+With the readiness gate in place, the opening was no longer clipped, but `captureReady` itself
+**swung wildly per request** for the same phrase (operator: `608ms` then `1765ms`). Root cause: each
+`/tts` **spawned a fresh `parec`** and set up a fresh PulseAudio stream; that per-request process
+spawn + stream setup was the variable cost — the remaining variable Speak latency.
+
+Fix (`src/capture.ts`, `src/server.ts`):
+- **One persistent capture source.** A new `CaptureSource` runs **ONE** long-lived `parec` reading
+  `dummy.monitor` for the container's lifetime. Per `/tts` the server **windows** that stream —
+  `beginWindow()` starts buffering incoming PCM, `endWindow()` stops and returns the captured PCM.
+  No per-request spawn ⇒ **no spawn/stream-setup variance**, and the capture is always live (the
+  original start-race stays solved). PCM is buffered **only** while a window is open, so idle silence
+  between requests is discarded and memory stays bounded. If the reader dies it respawns.
+- **`/tts` is serialized.** A promise-chain mutex (`runExclusive`) runs requests one at a time so only
+  **one** capture window is ever open (the source is shared). It also removes the warmup-vs-first-request
+  race.
+- **The per-request readiness gate is removed** (superseded — there's no per-request spawn to gate),
+  and the **entrypoint keep-warm reader is removed** (superseded — the server now owns the single
+  persistent reader). `VIVIFY_CAPTURE` still configures that (now persistent) reader command.
+- **Metric.** `captureReady`/`capture`/`captureStop` are gone from `[tts-timing]`; the new field is
+  **`windowFirstByteMs`** (`beginWindow` → first buffered chunk). With an always-on reader it's
+  consistently **~tens of ms and stable** — that stability *is* the variance fix. An empty window
+  (reader dead / never live) → loud **500**.
+
 ### Diagnostics
 - `[tts-timing]` now also reports `captureStop=` (grace-end → `parec` actually closed) and `build=` (wrap
   the captured PCM into a WAV + trim leading silence). These split the old end-of-request gap so an
@@ -96,6 +120,21 @@ Fix (two parts):
 Honest caveat: if a residual clip is **bridge-side** (winepulse playback cold-start on the playback side,
 not the capture side), the `[tts-audio]` `wavMs ≪ timelineMs` metric will surface it, and the full-pipeline
 `warmUp` covers that side.
+
+### Fix: first-Speak clip was the TRIM, not the capture
+A residual first-Speak opening clip remained. The `[tts-audio]` metric **isolated it**: the operator saw
+`wavMs=2983 timelineMs=2212 trimmedMs=284` — `wavMs > timelineMs`, i.e. the captured WAV is **longer**
+than the utterance, so the capture is **not** missing audio. The clip is the **leading-silence trim
+over-shaving** the soft opening consonant, not the capture path.
+
+Fix (`src/wav.ts`, `src/server.ts`):
+- **Looser trim defaults.** `trimLeadingSilence` now defaults `threshold` 512→**150** (the old
+  ≈−36 dBFS threshold detected the onset late on soft openings), `minRun` 4→**3**, and `leadInMs`
+  40→**80** (keep more audio before the detected onset). The null-sink monitor is digital silence
+  (zeros) when idle, so a low threshold is safe.
+- **Operator env knobs.** `VIVIFY_TRIM_THRESHOLD` and `VIVIFY_TRIM_LEADIN_MS` let an operator dial the
+  leading-edge alignment **without a rebuild**: raise the lead-in / lower the threshold if the opening
+  word still clips; lower the lead-in if the audio leads the mouth.
 
 ## WIN 2 — locate + close the gap
 The gap is wall-time inside the child's lifetime but **outside** `main()`'s self-measured window: Wine
@@ -143,30 +182,36 @@ No Wine/PulseAudio in the dev sandbox, so these come from the user's `docker run
 | Pass B total | ~2853ms | **removed** | killed by single-pass capture |
 | gap (load/teardown) | ~2170ms | _tbd_ | teardown was 2002ms even after kill-on-`[timing]` (the server still **awaited `'close'`**, which lags ~2s under Wine after the kill); now resolve-on-`[timing]` (reap in background) → teardown ~0. `wineLoadMs` is the residual |
 | capture-start clip | first ~2–3s lost; varying WAV sizes | **fixed** | gate on first captured sample before synthesis; sizes consistent |
-| first-Speak cold clip | opening clipped once after container start | **fixed** | full-pipeline `warmUp()` at startup + keep-warm persistent monitor reader (entrypoint bridge-only warmup removed) |
+| captureReady variance | was 608↔1765ms per request (per-request `parec` spawn) | **fixed** | replaced by a persistent windowed source (no per-request spawn) ⇒ `windowFirstByteMs` ~tens of ms, stable; `/tts` serialized; entrypoint keep-warm reader removed (superseded) |
+| first-Speak clip | opening clipped once after container start | **fixed** | `[tts-audio]` proved it was the TRIM (`wavMs > timelineMs`), not the capture; trim defaults loosened (threshold 150 / minRun 3 / leadIn 80) + env-tunable (`VIVIFY_TRIM_THRESHOLD` / `VIVIFY_TRIM_LEADIN_MS`) |
 | **`[tts-timing]` total** | **~7960ms** | _tbd_ | target ~3500–4000ms (Pass A floor + small overhead; teardown off the critical path) |
 
-`[tts-timing]` now reports `captureReady=`, `captureStop=`, and `build=`; a `[tts-audio]` line reports
+`[tts-timing]` now reports `windowFirstByte=` (the persistent source's per-window first-chunk latency —
+`captureReady`/`capture`/`captureStop` are gone) and `build=`; a `[tts-audio]` line reports
 `wavMs / timelineMs / rawCaptureMs / trimmedMs` (clip diagnostic — `wavMs ≪ timelineMs` ⇒ missing opening
-audio). Background measurement (warm `--no-cache` rebuild) that showed kill-on-`[timing]` had **not** moved
-teardown: `total=5769ms … teardown=2002 …` — the server was still awaiting `'close'`, which lags ~2s under
-Wine; the fix resolves on the `[timing]` line and reaps the bridge in the background instead.
+audio; `wavMs > timelineMs` with a clip ⇒ the trim over-shaved, dial `VIVIFY_TRIM_*`). Background
+measurement (warm, post-teardown-fix) showed `total=3869 (captureReady=608)` then `5029 (captureReady=1765)`
+for the same phrase with `teardown=0` held — the per-request `parec` spawn was the residual variance, now
+removed by the persistent windowed source; and `[tts-audio] wavMs=2983 timelineMs=2212 trimmedMs=284`
+isolated the first-Speak clip to the trim.
 
 ## What is verified where
 - **CI (this repo, no Wine/PA):** `wrapPcmToWav` + `trimLeadingSilence` unit tests; a server test with an
   injected `captureCommand` (fake-capture emits leading-silence + tone PCM) + timeline-only fake-bridge →
   valid RIFF/WAVE response built from the capture, aligned timeline, and the empty-capture → 500 path.
   `pnpm -r typecheck && pnpm -r test && pnpm lint && pnpm format` green.
-- **Operator (rebuild + curl/Speak):** `[tts-timing] total` drops toward ~3500–4000ms (Pass A floor +
-  small overhead, teardown off the critical path); `teardown` reads ~0; the **FIRST Speak's opening is
-  audible** (after the container logs `[warmup] done`); the WAV is valid RIFF/WAVE and plays; the **full
-  phrase is audible from the first word** (no clipped opening); **WAV sizes are consistent across requests**
-  for the same phrase; `captureReady=`/`captureStop=`/`build=` appear in `[tts-timing]`; **compare the
-  `[tts-audio]` `wavMs` vs `timelineMs` on the first vs later Speaks** (they should track closely on both —
-  a first-Speak `wavMs ≪ timelineMs` means the opening is still being clipped); lip-sync stays dense +
-  aligned in MASH. If capture yields no/garbled audio, the opening is clipped (first or subsequent Speak),
-  sizes vary, teardown stays ~2s, or lip-sync drifts → STOP + report (don't paper over it). Numbers fill the
-  table above.
+- **Operator (rebuild + curl/Speak):** `[tts-timing] total` is **stable every request** — ~3500–4000ms
+  with **no 5s outliers** for the same phrase (the per-request `parec` spawn that caused the 608↔1765ms
+  swing is gone); `teardown` reads ~0; `windowFirstByte=` is ~tens of ms and **steady** across requests
+  (no per-request variance); the **FIRST Speak's opening word is audible** (after the container logs
+  `[warmup] done`); the WAV is valid RIFF/WAVE and plays; the **full phrase is audible from the first
+  word** (no clipped opening); **WAV sizes are consistent across requests** for the same phrase;
+  `windowFirstByte=`/`build=` appear in `[tts-timing]`; **compare the `[tts-audio]` `wavMs` vs `timelineMs`
+  on the first vs later Speaks** (they should track closely on both); lip-sync stays dense + aligned in
+  MASH. **If still clipping the opening word or the audio leads the mouth, dial `VIVIFY_TRIM_THRESHOLD` /
+  `VIVIFY_TRIM_LEADIN_MS` and re-run.** If `total` still shows 5s outliers, `windowFirstByte` varies wildly,
+  capture yields no/garbled audio, sizes vary, teardown stays ~2s, or lip-sync drifts → STOP + report
+  (don't paper over it). Numbers fill the table above.
 
 ## Non-goals / known limitations
 Persistent-engine bridge daemon (report the residual `wineLoadMs`, defer). Forced parallel passes (moot

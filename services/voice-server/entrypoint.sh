@@ -31,17 +31,10 @@ else
   echo "WARN: pulse socket /tmp/pulse-socket not present after wait" >&2
 fi
 
-# --- keep the null-sink monitor warm (Cycle 11) -----------------------------
-# Each /tts spawns a fresh `parec` to record `dummy.monitor`. Between requests the monitor
-# source can go cold/idle, so the FIRST real Speak after start clipped its opening even though
-# the engine was warmed. Keep ONE long-lived reader on the monitor for the container's lifetime
-# so the source stays continuously active — the per-request `parec` then always connects to a hot
-# monitor (no cold-start clip; smaller captureReady). Multiple monitor readers fan out, so this
-# doesn't disturb the per-request capture. Best-effort: if it dies (e.g. the monitor isn't
-# enumerable yet) the only cost is the first Speak running colder — not a container failure —
-# so there's no readiness check or retry here, unlike the pulse/Xvfb blocks above.
-parec -d dummy.monitor >/dev/null 2>&1 &
-echo "capture: keep-warm monitor reader started (pid $!)"
+# NOTE (Cycle 11): the null-sink monitor reader is now owned by the SERVER — one persistent
+# `parec` for the container's lifetime, windowed per request (see CaptureSource in src/capture.ts).
+# That supersedes the earlier shell-level keep-warm reader: per-request `parec` spawn is gone, so
+# captureReady variance is gone, and the source stays continuously hot.
 
 # --- persistent Xvfb (Cycle 10) ---------------------------------------------
 # The per-request bridge command is now a plain `wine …` (no `xvfb-run -a`), so it needs a

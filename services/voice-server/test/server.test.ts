@@ -18,19 +18,34 @@ const detachedHolderBridgePath = fileURLToPath(
 );
 const failBridgePath = fileURLToPath(new URL('./fail-bridge.mjs', import.meta.url));
 const hangBridgePath = fileURLToPath(new URL('./hang-bridge.mjs', import.meta.url));
-const fakeCapturePath = fileURLToPath(new URL('./fake-capture.mjs', import.meta.url));
+const continuousCapturePath = fileURLToPath(
+  new URL('./fake-capture-continuous.mjs', import.meta.url),
+);
 const emptyCapturePath = fileURLToPath(new URL('./fake-capture-empty.mjs', import.meta.url));
-const slowCapturePath = fileURLToPath(new URL('./fake-capture-slow.mjs', import.meta.url));
 
-// Cycle 11: every server runs the single-pass flow — a timeline-only bridge plus a
-// capture process that streams raw PCM. The fake-capture emits leading-silence +
-// tone PCM the server wraps + trims into the WAV; a small grace keeps tests fast.
-const captureCommand = `node ${fakeCapturePath}`;
+// Cycle 11 follow-up: the per-request `parec` became ONE PERSISTENT capture source that
+// the server WINDOWS per request. fake-capture-continuous streams raw s16 PCM continuously
+// (a small chunk every ~20ms), so a window opened at any moment captures samples the server
+// wraps + trims into the WAV. A small grace keeps tests fast.
+const captureCommand = `node ${continuousCapturePath}`;
 const captureGraceMs = 20;
-// Cycle 11 fix: the readiness gate waits for the capture's first sample before spawning
-// the bridge. fake-capture emits immediately, so 1000ms is generous headroom for the
-// happy path while keeping the timeout-path tests fast where they set a tighter value.
+// Cycle 11 follow-up: the readiness GATE is gone (the persistent source is always live);
+// captureReadyTimeoutMs now only governs a warn log. A small value is harmless. warmOnStart
+// is OFF so tests don't run a background warmup synthesis, and captureRespawn is OFF so the
+// fake reader isn't respawned after the server tears it down.
 const captureReadyTimeoutMs = 1000;
+const captureRespawn = false;
+const warmOnStart = false;
+
+// Common opts every server in this suite shares (persistent continuous capture, no warmup,
+// no respawn). Spread into each createVoiceServer call alongside its bridge.
+const baseCaptureOpts = {
+  captureCommand,
+  captureGraceMs,
+  captureReadyTimeoutMs,
+  captureRespawn,
+  warmOnStart,
+} as const;
 
 interface TtsResponse {
   audioWavBase64: string;
@@ -65,9 +80,7 @@ describe('voice-server HTTP layer (fake bridge)', () => {
   beforeAll(async () => {
     server = createVoiceServer({
       bridgeCommand: `node ${fakeBridgePath}`,
-      captureCommand,
-      captureGraceMs,
-      captureReadyTimeoutMs,
+      ...baseCaptureOpts,
     });
     const port = await listenOnEphemeralPort(server);
     baseUrl = `http://127.0.0.1:${port}`;
@@ -98,9 +111,9 @@ describe('voice-server HTTP layer (fake bridge)', () => {
     const json = (await res.json()) as TtsResponse;
     expect(json.format).toBe('wav');
 
-    // Cycle 11: the WAV is built from the fake-capture's raw PCM (leading silence +
-    // tone), wrapped + trimmed by the server — NOT produced by the bridge. It must
-    // still base64-decode to a real RIFF/WAVE container.
+    // Cycle 11 follow-up: the WAV is built from the PERSISTENT capture window's raw PCM
+    // (continuously streamed silence + tone bursts), wrapped + trimmed by the server —
+    // NOT produced by the bridge. It must still base64-decode to a real RIFF/WAVE.
     const wav = Buffer.from(json.audioWavBase64, 'base64');
     expect(wav.length).toBeGreaterThanOrEqual(44);
     expect(wav.toString('ascii', 0, 4)).toBe('RIFF');
@@ -183,9 +196,7 @@ describe('voice-server latency instrumentation (Cycle 10, fake bridge)', () => {
   beforeAll(async () => {
     server = createVoiceServer({
       bridgeCommand: `node ${fakeBridgePath}`,
-      captureCommand,
-      captureGraceMs,
-      captureReadyTimeoutMs,
+      ...baseCaptureOpts,
       onTiming: (t) => {
         captured = t;
       },
@@ -217,16 +228,15 @@ describe('voice-server latency instrumentation (Cycle 10, fake bridge)', () => {
     expect(t.bridge?.passATotalMs).toBe(300);
     expect(t.bridge?.totalMs).toBe(320);
 
-    // Server-observed stages are real wall-clock measurements: present and
-    // non-negative (Cycle 11: readMs is gone, replaced by capture/wineLoad; the
-    // Cycle 11 fix adds captureReadyMs — parec spawn → its first sample; the Cycle 11
-    // follow-up adds captureStopMs — stopCapture duration — and buildMs — wrap+trim).
+    // Server-observed stages are real wall-clock measurements: present and non-negative.
+    // Cycle 11 follow-up: the per-request captureReadyMs/captureMs/captureStopMs stages are
+    // GONE (the persistent source has no per-request spawn / stop); a single
+    // windowFirstByteMs (beginWindow → first buffered chunk) replaces them, alongside
+    // bridgeMs/wineLoadMs/buildMs/encodeMs/totalMs.
     for (const v of [
       t.bridgeMs,
       t.wineLoadMs,
-      t.captureReadyMs,
-      t.captureMs,
-      t.captureStopMs,
+      t.windowFirstByteMs,
       t.buildMs,
       t.encodeMs,
       t.totalMs,
@@ -242,12 +252,10 @@ describe('voice-server bridge-failure path', () => {
   let baseUrl: string;
 
   beforeAll(async () => {
-    // The capture still runs and must be torn down even though the bridge fails.
+    // The persistent capture still streams and must be torn down even though the bridge fails.
     server = createVoiceServer({
       bridgeCommand: `node ${failBridgePath}`,
-      captureCommand,
-      captureGraceMs,
-      captureReadyTimeoutMs,
+      ...baseCaptureOpts,
     });
     const port = await listenOnEphemeralPort(server);
     baseUrl = `http://127.0.0.1:${port}`;
@@ -276,9 +284,7 @@ describe('voice-server bridge timeout', () => {
     // must kill it and fail the request rather than pinning the connection open.
     server = createVoiceServer({
       bridgeCommand: `node ${hangBridgePath}`,
-      captureCommand,
-      captureGraceMs,
-      captureReadyTimeoutMs,
+      ...baseCaptureOpts,
       bridgeTimeoutMs: 200,
     });
     const port = await listenOnEphemeralPort(server);
@@ -300,20 +306,19 @@ describe('voice-server bridge timeout', () => {
   });
 });
 
-describe('voice-server empty-capture path (Cycle 11 honest failure via readiness gate)', () => {
+describe('voice-server empty-window path (Cycle 11 follow-up honest failure)', () => {
   let server: Server;
   let baseUrl: string;
 
   beforeAll(async () => {
-    // The bridge would succeed, but the capture stays alive and produces NO samples.
-    // Cycle 11 fix: synthesis is gated on the capture's first sample, so this never
-    // reaches the bridge — the readiness gate times out and the request fails loudly
-    // (never a faked silent WAV). A short captureReadyTimeoutMs keeps this fast.
+    // The bridge would succeed, but the persistent capture source emits NO bytes ever
+    // (fake-capture-empty). The window therefore closes empty, and the server fails the
+    // request loudly rather than returning a faked silent WAV. There is no readiness gate
+    // anymore: the request runs the bridge, then the empty window → 500.
     server = createVoiceServer({
       bridgeCommand: `node ${fakeBridgePath}`,
+      ...baseCaptureOpts,
       captureCommand: `node ${emptyCapturePath}`,
-      captureGraceMs,
-      captureReadyTimeoutMs: 300,
     });
     const port = await listenOnEphemeralPort(server);
     baseUrl = `http://127.0.0.1:${port}`;
@@ -323,61 +328,16 @@ describe('voice-server empty-capture path (Cycle 11 honest failure via readiness
     await closeServer(server);
   });
 
-  it('POST /tts → 500 when the capture never produces a sample (readiness timeout)', async () => {
+  it('POST /tts → 500 when the capture window is empty (no PCM streamed)', async () => {
     const res = await fetch(`${baseUrl}/tts`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ text: 'nothing was captured' }),
     });
     expect(res.status).toBe(500);
-    // fake-capture-empty stays alive emitting nothing, so this is the readiness-TIMEOUT
-    // path specifically: "null-sink capture produced no sample within <n>ms …". Pin to that
-    // wording so the test fails if it ever silently takes a different error path.
-    expect(((await res.json()) as { error: string }).error).toMatch(/no sample within/);
-  });
-});
-
-describe('voice-server slow-capture path (Cycle 11 readiness gate WAITS)', () => {
-  let server: Server;
-  let baseUrl: string;
-
-  beforeAll(async () => {
-    // fake-capture-slow delays its first PCM chunk by DELAY_MS (~150ms) then streams
-    // the same leading-silence + tone PCM. With a generous captureReadyTimeoutMs the
-    // server must WAIT for that first sample (not fail, not clip), then run the bridge
-    // and return the captured audio — proving the gate waits for a slow-but-working
-    // capture rather than racing the opening words.
-    server = createVoiceServer({
-      bridgeCommand: `node ${fakeBridgePath}`,
-      captureCommand: `node ${slowCapturePath}`,
-      captureGraceMs,
-      captureReadyTimeoutMs: 2000,
-    });
-    const port = await listenOnEphemeralPort(server);
-    baseUrl = `http://127.0.0.1:${port}`;
-  });
-
-  afterAll(async () => {
-    await closeServer(server);
-  });
-
-  it('POST /tts → 200 with valid RIFF/WAVE when the capture is slow but eventually streams', async () => {
-    const res = await fetch(`${baseUrl}/tts`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text: 'wait for the capture to wake up' }),
-    });
-    expect(res.status).toBe(200);
-
-    const json = (await res.json()) as TtsResponse;
-    expect(json.format).toBe('wav');
-
-    // The audio still arrives after the gate waits ~150ms — a real RIFF/WAVE built from
-    // the slow capture's PCM, not a clipped/empty buffer.
-    const wav = Buffer.from(json.audioWavBase64, 'base64');
-    expect(wav.length).toBeGreaterThan(44);
-    expect(wav.toString('ascii', 0, 4)).toBe('RIFF');
-    expect(wav.toString('ascii', 8, 12)).toBe('WAVE');
+    // An empty window is the honest-failure path: "null-sink capture window was empty …".
+    // Pin the wording so the test fails if it ever silently takes a different error path.
+    expect(((await res.json()) as { error: string }).error).toMatch(/capture window was empty/);
   });
 });
 
@@ -388,9 +348,7 @@ describe('voice-server CORS (browser access)', () => {
   beforeAll(async () => {
     server = createVoiceServer({
       bridgeCommand: `node ${fakeBridgePath}`,
-      captureCommand,
-      captureGraceMs,
-      captureReadyTimeoutMs,
+      ...baseCaptureOpts,
     });
     const port = await listenOnEphemeralPort(server);
     baseUrl = `http://127.0.0.1:${port}`;
@@ -442,9 +400,7 @@ describe('voice-server skips bridge teardown (Cycle 11 follow-up: SIGKILL on [ti
     // out that 3s close. The capture is the normal fast fake.
     server = createVoiceServer({
       bridgeCommand: `node ${slowExitBridgePath}`,
-      captureCommand,
-      captureGraceMs,
-      captureReadyTimeoutMs,
+      ...baseCaptureOpts,
     });
     const port = await listenOnEphemeralPort(server);
     baseUrl = `http://127.0.0.1:${port}`;
@@ -499,9 +455,7 @@ describe('voice-server resolves on [timing], not on bridge close', () => {
     // request would block ~3s. The fix resolves the instant `[timing]` lands on stderr.
     server = createVoiceServer({
       bridgeCommand: `node ${detachedHolderBridgePath}`,
-      captureCommand,
-      captureGraceMs,
-      captureReadyTimeoutMs,
+      ...baseCaptureOpts,
     });
     const port = await listenOnEphemeralPort(server);
     baseUrl = `http://127.0.0.1:${port}`;
@@ -547,6 +501,8 @@ describe('voice-server resolves on [timing], not on bridge close', () => {
 });
 
 describe('warmUp (Cycle 11 follow-up: prime the pipeline, best-effort)', () => {
+  // warmUp creates its OWN throwaway persistent source (respawn:false), runs one synth,
+  // and stops it — so it doesn't take warmOnStart/captureRespawn.
   it('resolves without throwing against a working bridge + capture', async () => {
     await expect(
       warmUp({
@@ -558,16 +514,57 @@ describe('warmUp (Cycle 11 follow-up: prime the pipeline, best-effort)', () => {
     ).resolves.toBeUndefined();
   });
 
-  it('swallows errors and still resolves when the capture produces no audio (best-effort)', async () => {
-    // fake-capture-empty never streams a sample → synthesize() rejects, but warmUp must
-    // swallow that (a cold first Speak, never a crash). A short readiness timeout keeps it fast.
+  it('swallows errors and still resolves when the capture window is empty (best-effort)', async () => {
+    // fake-capture-empty never streams a byte → the window is empty → synthesize() rejects,
+    // but warmUp must swallow that (a cold first Speak, never a crash).
     await expect(
       warmUp({
         bridgeCommand: `node ${fakeBridgePath}`,
         captureCommand: `node ${emptyCapturePath}`,
         captureGraceMs,
-        captureReadyTimeoutMs: 300,
+        captureReadyTimeoutMs,
       }),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe('voice-server serializes concurrent /tts (one capture window at a time)', () => {
+  let server: Server;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    server = createVoiceServer({
+      bridgeCommand: `node ${fakeBridgePath}`,
+      ...baseCaptureOpts,
+    });
+    const port = await listenOnEphemeralPort(server);
+    baseUrl = `http://127.0.0.1:${port}`;
+  });
+
+  afterAll(async () => {
+    await closeServer(server);
+  });
+
+  it('two concurrent POST /tts both return 200 with valid RIFF/WAVE (run one-at-a-time, no corruption)', async () => {
+    const post = (text: string): Promise<Response> =>
+      fetch(`${baseUrl}/tts`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+
+    // Fire both at once; the server serializes the capture windows so neither corrupts the
+    // other's PCM. Both must still produce a valid RIFF/WAVE from their own window.
+    const [a, b] = await Promise.all([post('first concurrent'), post('second concurrent')]);
+
+    for (const res of [a, b]) {
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as TtsResponse;
+      expect(json.format).toBe('wav');
+      const wav = Buffer.from(json.audioWavBase64, 'base64');
+      expect(wav.length).toBeGreaterThanOrEqual(44);
+      expect(wav.toString('ascii', 0, 4)).toBe('RIFF');
+      expect(wav.toString('ascii', 8, 12)).toBe('WAVE');
+    }
   });
 });

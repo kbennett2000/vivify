@@ -78,14 +78,19 @@ function parseWav(wav: Buffer): WavView | null {
 }
 
 export interface TrimOptions {
-  /** Absolute 16-bit amplitude below which a sample counts as silence (default 512 ≈ −36 dBFS). */
+  /**
+   * Absolute 16-bit amplitude below which a sample counts as silence (default 150). The null-sink
+   * monitor is DIGITAL silence (zeros) when idle, so a low threshold catches a soft opening
+   * consonant without false-triggering on silence. (Was 512 ≈ −36 dBFS, which detected the onset
+   * late on soft openings and let the lead-in shave the first consonant — Cycle 11 clip fix.)
+   */
   threshold?: number;
-  /** Consecutive non-silent frames required to mark the audio onset (default 4) — rejects a lone spike. */
+  /** Consecutive non-silent frames required to mark the audio onset (default 3) — rejects a lone spike. */
   minRun?: number;
   /**
-   * Keep this many ms of audio BEFORE the detected onset (default 40), so a soft leading
-   * consonant isn't shaved. A small lead-in is imperceptible and aligns WAV t≈0 with the
-   * timeline's first viseme far more safely than trimming flush to the first loud sample.
+   * Keep this many ms of audio BEFORE the detected onset (default 80) so a soft leading consonant
+   * isn't shaved. A small lead-in is imperceptible for sync and aligns WAV t≈0 with the timeline's
+   * first viseme far more safely than trimming flush to the first loud sample.
    */
   leadInMs?: number;
 }
@@ -98,9 +103,11 @@ export interface TrimOptions {
  * Only LEADING silence is trimmed; trailing audio is preserved.
  */
 export function trimLeadingSilence(wav: Buffer, opts: TrimOptions = {}): Buffer {
-  const threshold = opts.threshold ?? 512;
-  const minRun = opts.minRun ?? 4;
-  const leadInMs = opts.leadInMs ?? 40;
+  // Clamp to ≥ 0 so a stray negative operator env value (VIVIFY_TRIM_*) can't INVERT the lead-in
+  // and shave into real speech — the exact over-trim this guard exists to prevent.
+  const threshold = Math.max(0, opts.threshold ?? 150);
+  const minRun = Math.max(1, opts.minRun ?? 3);
+  const leadInMs = Math.max(0, opts.leadInMs ?? 80);
   const view = parseWav(wav);
   if (!view || view.bits !== 16) return wav; // only 16-bit PCM is trimmable here
 

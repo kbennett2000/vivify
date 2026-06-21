@@ -2,9 +2,12 @@
 // verified where", CI bullet): the timing parse/format that backs the per-request
 // `[tts-timing]` breakdown. Pure-function tests — no Wine, no child process. The
 // bridge is now single-pass: the `[timing]` line drops `passB_*`, and TtsTiming
-// carries server stages {bridgeMs, wineLoadMs, captureMs, encodeMs} + the parsed
-// bridge. The server-side end-to-end (fake bridge emits the line → onTiming) lives
-// in server.test.ts.
+// carries server stages {bridgeMs, wineLoadMs, windowFirstByteMs, buildMs, encodeMs}
+// + the parsed bridge. Cycle 11 follow-up: the per-request `parec` became a PERSISTENT
+// windowed source, so the old captureReadyMs/captureMs/captureStopMs stages are gone
+// and a single windowFirstByteMs (beginWindow → first buffered chunk) replaces them.
+// The server-side end-to-end (fake bridge emits the line → onTiming) lives in
+// server.test.ts.
 
 import { describe, it, expect } from 'vitest';
 import {
@@ -83,9 +86,7 @@ describe('formatTtsTiming', () => {
     const t: TtsTiming = {
       bridgeMs: 2300,
       wineLoadMs: 200,
-      captureReadyMs: 45,
-      captureMs: 2100,
-      captureStopMs: 3,
+      windowFirstByteMs: 45,
       buildMs: 4,
       encodeMs: 2,
       totalMs: 2310,
@@ -101,15 +102,18 @@ describe('formatTtsTiming', () => {
 
     // Grand total.
     expect(out).toContain('total=2310ms');
-    // Server stages (Cycle 11 fix adds the capture-readiness gate; the follow-up adds
-    // captureStop — stopCapture duration — and build — wrap+trim).
-    expect(out).toContain('captureReady=45');
+    // Server stages (Cycle 11 follow-up: the persistent windowed source reports a single
+    // windowFirstByte — beginWindow → first buffered chunk — replacing the old
+    // captureReady/capture/captureStop stages; build = wrap+trim).
+    expect(out).toContain('windowFirstByte=45');
     expect(out).toContain('bridgeWall=2300');
     expect(out).toContain('wineLoad=200');
-    expect(out).toContain('capture=2100');
-    expect(out).toContain('captureStop=3');
     expect(out).toContain('build=4');
     expect(out).toContain('encode=2');
+    // The dropped stages must be gone from the output.
+    expect(out).not.toContain('captureReady=');
+    expect(out).not.toContain('capture=');
+    expect(out).not.toContain('captureStop=');
     // teardown = max(0, bridgeMs − wineLoadMs − bridge.totalMs) = 2300 − 200 − 2000 = 100.
     expect(out).toContain('teardown=100');
     // Bridge breakdown (each stage's number, plus ttfb annotation).
@@ -123,9 +127,7 @@ describe('formatTtsTiming', () => {
     const t: TtsTiming = {
       bridgeMs: 1000,
       wineLoadMs: 100,
-      captureReadyMs: 30,
-      captureMs: 900,
-      captureStopMs: 2,
+      windowFirstByteMs: 30,
       buildMs: 3,
       encodeMs: 1,
       totalMs: 1010,
@@ -145,9 +147,7 @@ describe('formatTtsTiming', () => {
     const t: TtsTiming = {
       bridgeMs: 2300,
       wineLoadMs: 200,
-      captureReadyMs: 45,
-      captureMs: 2100,
-      captureStopMs: 3,
+      windowFirstByteMs: 45,
       buildMs: 4,
       encodeMs: 2,
       totalMs: 2310,
@@ -156,13 +156,14 @@ describe('formatTtsTiming', () => {
     const out = formatTtsTiming(t);
     expect(out).toContain('bridge[timing unavailable]');
     expect(out).toContain('total=2310ms');
-    expect(out).toContain('captureReady=45');
+    expect(out).toContain('windowFirstByte=45');
     expect(out).toContain('bridgeWall=2300');
     expect(out).toContain('wineLoad=200');
-    expect(out).toContain('capture=2100');
-    expect(out).toContain('captureStop=3');
     expect(out).toContain('build=4');
     expect(out).toContain('encode=2');
+    expect(out).not.toContain('captureReady=');
+    expect(out).not.toContain('capture=');
+    expect(out).not.toContain('captureStop=');
     // No teardown when there's no bridge self-time to subtract.
     expect(out).not.toContain('teardown=');
   });

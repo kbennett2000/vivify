@@ -66,12 +66,14 @@ describe('wrapPcmToWav', () => {
 });
 
 describe('trimLeadingSilence', () => {
-  // NOTE (Cycle 11 fix): the DEFAULT leadInMs is now 40, which at 44100 Hz is
-  // round(0.040 * 44100) = 1764 frames of lead-in kept before the onset. The
-  // flush-to-onset behavior these first tests assert therefore requires an explicit
-  // `leadInMs: 0`; otherwise the tiny (few-frame) leading silence here is well inside
-  // the lead-in window and nothing would be trimmed. The lead-in guard itself gets its
-  // own dedicated tests further down (with a rate that makes the ms→frame math exact).
+  // NOTE (Cycle 11 follow-up): the DEFAULTS changed — threshold 512→150, minRun 4→3,
+  // leadInMs 40→80. At 44100 Hz the default leadInMs=80 is round(0.080 * 44100) = 3528
+  // frames of lead-in kept before the onset. The flush-to-onset behavior these first
+  // tests assert therefore requires an explicit `leadInMs: 0`; otherwise the tiny
+  // (few-frame) leading silence here is well inside the lead-in window and nothing
+  // would be trimmed. The lead-in guard itself gets its own dedicated tests further
+  // down (with a rate that makes the ms→frame math exact). A dedicated test below also
+  // pins the NEW defaults (threshold 150, minRun 3, leadInMs 80) exactly.
 
   it('with leadInMs:0, removes leading silent frames so the first sample is the audible onset', () => {
     // 5 silent frames (value 0) then 8 loud frames (value 8000), 16-bit mono.
@@ -101,7 +103,7 @@ describe('trimLeadingSilence', () => {
 
   it('with leadInMs:0, requires a run: a lone spike in silence is not the onset, the sustained tone is', () => {
     // silence(5), one loud spike(1), silence(5), sustained tone(6). With the default
-    // minRun=4, the lone spike is rejected; onset is the sustained run.
+    // minRun=3, the lone spike (a single frame) is rejected; onset is the sustained run.
     const samples = [
       ...Array<number>(5).fill(0),
       8000, // lone spike — must NOT be treated as onset
@@ -212,6 +214,85 @@ describe('trimLeadingSilence', () => {
 
       expect(trimmed.length).toBe(wav.length);
       expect(trimmed.equals(wav)).toBe(true);
+    });
+  });
+
+  describe('NEW Cycle 11 follow-up defaults (threshold 150, minRun 3, leadInMs 80)', () => {
+    // Rate 1000 ⇒ 1ms = 1 frame, so the default leadInMs=80 keeps exactly 80 frames
+    // before the onset. These tests call trimLeadingSilence with NO opts, so they pin
+    // the function's actual default values, not echoed-back arguments.
+    const RATE = 1000;
+    const FMT = { rate: RATE, channels: 1, bits: 16 };
+
+    function pcmWav(samples: number[]): Buffer {
+      return wrapPcmToWav(pcm16(samples), FMT);
+    }
+
+    it('default leadInMs=80 keeps exactly 80 frames before the onset (at rate 1000)', () => {
+      // 300 silent frames then a sustained tone. onset frame = 300; default leadIn=80
+      // ⇒ start frame = 300 − 80 = 220 ⇒ surviving frames = totalFrames − 220.
+      const silentFrames = 300;
+      const toneFrames = 500;
+      const totalFrames = silentFrames + toneFrames;
+      const wav = pcmWav([
+        ...Array<number>(silentFrames).fill(0),
+        ...Array<number>(toneFrames).fill(8000),
+      ]);
+
+      const trimmed = trimLeadingSilence(wav); // DEFAULTS
+
+      const expectedFrames = totalFrames - (silentFrames - 80); // = totalFrames − 220
+      const expectedData = expectedFrames * 2;
+      expect(trimmed.readUInt32LE(40)).toBe(expectedData);
+      expect(trimmed.length).toBe(44 + expectedData);
+      // The first kept sample is silence (start frame 220 < onset 300); the onset tone
+      // appears exactly 80 frames (160 bytes) in.
+      expect(trimmed.readInt16LE(44)).toBe(0);
+      expect(trimmed.readInt16LE(44 + 80 * 2)).toBe(8000);
+    });
+
+    it('default threshold=150 treats a 200-amplitude sample as audible (above the new floor)', () => {
+      // A run of 3 samples at amplitude 200 (> 150) IS the onset under the new defaults,
+      // where the old threshold of 512 would have skipped right past it as "silence".
+      // 100 frames of true silence (0), then 200 frames at amplitude 200. With leadIn=80
+      // the start lands at frame 100 − 80 = 20, so 20 silent frames + 200 tone survive.
+      const silentFrames = 100;
+      const softFrames = 200;
+      const wav = pcmWav([
+        ...Array<number>(silentFrames).fill(0),
+        ...Array<number>(softFrames).fill(200),
+      ]);
+
+      const trimmed = trimLeadingSilence(wav); // DEFAULTS
+
+      // start frame = onset(100) − leadIn(80) = 20 ⇒ survivors = 80 kept-silence + 200 tone.
+      const expectedFrames = 80 + softFrames; // 80 + 200 = 280
+      expect(trimmed.readUInt32LE(40)).toBe(expectedFrames * 2);
+      // start of the kept lead-in is silence; the soft 200-amplitude onset is 80 frames in.
+      expect(trimmed.readInt16LE(44)).toBe(0);
+      expect(trimmed.readInt16LE(44 + 80 * 2)).toBe(200);
+    });
+
+    it('default minRun=3 rejects a 2-frame burst but accepts a 3-frame run', () => {
+      // silence(100), 2-frame burst (rejected, < minRun 3), silence(100), sustained tone.
+      // onset is the sustained run; with leadIn=80 the start lands 80 frames before it.
+      const lead = 100;
+      const wav = pcmWav([
+        ...Array<number>(lead).fill(0),
+        8000,
+        8000, // 2-frame burst — must NOT be the onset under minRun=3
+        ...Array<number>(lead).fill(0),
+        ...Array<number>(300).fill(8000), // sustained onset
+      ]);
+
+      const onsetFrame = lead + 2 + lead; // 202
+      const trimmed = trimLeadingSilence(wav); // DEFAULTS
+
+      // The 2-frame burst is below minRun=3, so the onset is the sustained run at frame
+      // 202; start = 202 − 80 = 122 ⇒ surviving frames = totalFrames − 122.
+      const totalFrames = lead + 2 + lead + 300; // 502
+      const expectedFrames = totalFrames - (onsetFrame - 80);
+      expect(trimmed.readUInt32LE(40)).toBe(expectedFrames * 2);
     });
   });
 });

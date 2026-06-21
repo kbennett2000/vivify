@@ -59,12 +59,12 @@ export interface TtsTiming {
    * WIN 2) a persistent-engine daemon would remove.
    */
   wineLoadMs: number;
-  /** Capture readiness gate (Cycle 11 fix): parec spawn → its first sample, paid before synthesis. */
-  captureReadyMs: number;
-  /** Recording the null-sink monitor (parec) — runs concurrently with the bridge. */
-  captureMs: number;
-  /** Stopping the capture: grace-end → parec actually closed (SIGTERM → 'close'). Proves it's fast. */
-  captureStopMs: number;
+  /**
+   * Capture window first-byte latency (Cycle 11 persistent source): beginWindow → first buffered
+   * chunk from the always-on monitor reader. Replaces the old per-request `captureReadyMs` — it's
+   * now consistently ~tens of ms (no per-request `parec` spawn), which is the variance fix.
+   */
+  windowFirstByteMs: number;
   /** Building the WAV from captured PCM: wrap + trim leading silence (base64 is `encode`). */
   buildMs: number;
   /** Building the WAV from captured PCM (wrap + trim) + base64 encode for the response. */
@@ -92,8 +92,8 @@ export function formatTtsTiming(t: TtsTiming): string {
       ? `wineLoad=${t.wineLoadMs}`
       : `wineLoad=${t.wineLoadMs} teardown=${teardownMs}`;
   return (
-    `total=${t.totalMs}ms (captureReady=${t.captureReadyMs} bridgeWall=${t.bridgeMs} ${gapPart} ` +
-    `capture=${t.captureMs} captureStop=${t.captureStopMs} build=${t.buildMs} encode=${t.encodeMs}) ` +
+    `total=${t.totalMs}ms (windowFirstByte=${t.windowFirstByteMs} bridgeWall=${t.bridgeMs} ${gapPart} ` +
+    `build=${t.buildMs} encode=${t.encodeMs}) ` +
     bridgePart
   );
 }

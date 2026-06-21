@@ -60,34 +60,34 @@ own bridge-only warmup (Cycle 10's primed only the engine and left the capture p
 clipped the first Speak's opening). Practical effect: subsequent Speaks are warm, and the first one
 is too once `[warmup] done` is logged.
 
-The entrypoint also starts a **keep-warm monitor reader** (`parec -d dummy.monitor >/dev/null &`)
-that runs for the container's lifetime. Each `/tts` spawns a fresh per-request `parec`, and
-`dummy.monitor` would otherwise cool between requests; the long-lived reader keeps the monitor
-continuously active so the first Speak's capture path stays hot (no cold-start clip, smaller
-`captureReady`). Multiple monitor readers fan out, so it doesn't disturb the per-request capture.
+**Persistent capture source (Cycle 11).** The server owns **one** long-lived `parec` reading
+`dummy.monitor` for the container's lifetime (`CaptureSource` in `src/capture.ts`), and **windows**
+its stream per request (`beginWindow`/`endWindow`). There is **no per-request `parec` spawn** — that
+per-request spawn + PulseAudio stream setup was the residual variable latency (`captureReady` swung
+~600↔1700ms for the same phrase), so removing it removes the variance. The monitor stays continuously
+hot, so the first Speak's capture path is never cold. `VIVIFY_CAPTURE` still configures this (now
+persistent) reader command. `/tts` is **serialized** so only one capture window is open at a time. The
+entrypoint's old shell-level keep-warm reader is **folded into the server** (superseded — removed).
 
 **Single pass (Cycle 11).** The bridge used to synthesize each phrase **twice** — Pass A
 (`CLSID_MMAudioDest`, real-time playback) for the dense per-phoneme mouth events, then Pass B
 (`CLSID_AudioDestFile`) purely to write the WAV. Pass B is gone. The bridge now runs **one**
 real-time pass: it plays the utterance to the PulseAudio null sink and emits the mouth
-timeline. The server captures the audio by recording that sink's `.monitor` with `parec`
-**concurrently** with the pass, so one synthesis produces both the events and the audio.
-
-Synthesis is **gated on the capture actually streaming**: the server starts `parec`, waits for
-its first captured sample (proof the null-sink monitor is open and flowing), and only then spawns
-the bridge. This closes a capture-start race that otherwise clipped the opening words — the bridge
-used to begin before `parec` was recording, so the first audio was lost.
+timeline. The server captures the audio by windowing the persistent monitor reader
+**concurrently** with the pass, so one synthesis produces both the events and the audio. Because the
+reader is always streaming, the audio is never clipped by a capture-start race (the original race this
+replaced gated synthesis on a per-request `parec`'s first sample — no longer needed).
 
 - `VIVIFY_CAPTURE` (injectable; default
   `parec --device=dummy.monitor --format=s16le --rate=44100 --channels=1 --latency-msec=30`) — the
-  command the server starts before spawning the bridge and stops (SIGTERM) after it exits.
-  `--latency-msec=30` makes `parec` flush its first fragment fast, so the readiness gate resolves
-  quickly.
-- `VIVIFY_CAPTURE_READY_MS` (default `5000`) — how long to wait for that first captured sample
-  before failing. If the null-sink monitor never streams within this window, `/tts` returns **500**
-  rather than a clipped WAV.
+  command for the **persistent** monitor reader the server windows per request.
+  `--latency-msec=30` makes `parec` flush fragments fast, so a window's first chunk arrives in ~tens of ms.
+- `VIVIFY_CAPTURE_READY_MS` (default `5000`) — how long after (re)starting the persistent reader to
+  wait for its first sample before warning that the null sink isn't streaming.
 - `VIVIFY_CAPTURE_GRACE_MS` (default `200`) — how long after the bridge exits the server keeps
   capturing, so the audio tail isn't clipped.
+- `VIVIFY_TRIM_THRESHOLD` (default `150`) and `VIVIFY_TRIM_LEADIN_MS` (default `80`) — leading-silence
+  trim alignment. Dial these if the opening word clips or the audio leads the mouth.
 - The null sink's format is **pinned** (`s16le` / 44100 / mono in `pulse-null.pa`) so the
   monitor stream is deterministic and `parec` records it 1:1 — no resample guesswork. The
   server collects the raw PCM from capture stdout, wraps it into a WAV header, and **trims
@@ -99,15 +99,13 @@ faked silent WAV.
 
 **Per-request timing.** Every `POST /tts` logs a `[tts-timing]` line combining the server
 stages with the bridge's own per-stage `[timing]` line. Stages:
-- `captureReady` — the capture-readiness gate: `parec` start → its first captured sample, paid
-  before synthesis begins (the fix for the clipped-opening race).
+- `windowFirstByte` — the persistent capture source's per-window latency: `beginWindow` → the first
+  buffered chunk from the always-on monitor reader. Consistently small (~tens of ms) and **stable**,
+  since there's no per-request `parec` spawn. Replaces the old `captureReady`/`capture`/`captureStop`
+  fields.
 - `wineLoad` — the Wine process-load prologue: child spawn → the bridge's `[boot]` (its first
   statement in `main()`). This is the residual structural cost; a persistent-engine bridge
   daemon would remove it (future work — not done here).
-- `capture` — `parec` wall time: the null-sink recording (start → stop, incl. the grace tail);
-  runs concurrently with the bridge.
-- `captureStop` — stopping the recorder: grace-end → `parec` actually closed (SIGTERM → `'close'`).
-  Expected ~0; proves stopping the capture isn't where time goes.
 - `build` — building the WAV from the captured PCM: wrap into a RIFF/WAVE header + trim leading
   silence. (Base64-encoding the response is counted separately as `encode`.)
 - `teardown` — the time after the bridge's `[timing]` print until the process exits. Wine's
