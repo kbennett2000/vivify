@@ -216,15 +216,31 @@ describe('voice-server CORS (browser access)', () => {
     await closeServer(server);
   });
 
-  it('OPTIONS preflight → 204 with permissive CORS headers', async () => {
-    const res = await fetch(`${baseUrl}/tts`, { method: 'OPTIONS' });
+  it('OPTIONS preflight reflects the request Origin (any localhost port) → 204', async () => {
+    const origin = 'http://localhost:5174'; // Vite's "next free port" — must not be hardcoded away
+    const res = await fetch(`${baseUrl}/tts`, {
+      method: 'OPTIONS',
+      headers: {
+        origin,
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'content-type',
+      },
+    });
     expect(res.status).toBe(204);
-    expect(res.headers.get('access-control-allow-origin')).toBe('*');
+    expect(res.headers.get('access-control-allow-origin')).toBe(origin);
     expect(res.headers.get('access-control-allow-methods')).toContain('POST');
     expect(res.headers.get('access-control-allow-headers')).toContain('content-type');
   });
 
-  it('responses carry the CORS origin header', async () => {
+  it('reflects the Origin on a normal response and sets Vary: Origin', async () => {
+    const origin = 'http://localhost:61234';
+    const res = await fetch(`${baseUrl}/health`, { headers: { origin } });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('access-control-allow-origin')).toBe(origin);
+    expect(res.headers.get('vary')).toContain('Origin');
+  });
+
+  it('falls back to * when there is no Origin (curl / same-origin)', async () => {
     const res = await fetch(`${baseUrl}/health`);
     expect(res.status).toBe(200);
     expect(res.headers.get('access-control-allow-origin')).toBe('*');

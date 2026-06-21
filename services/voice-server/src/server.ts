@@ -32,17 +32,34 @@ const DEFAULT_BRIDGE =
 const DEFAULT_MAX_BODY = 1_000_000;
 const DEFAULT_BRIDGE_TIMEOUT = Number(process.env.VIVIFY_SAPI4_TIMEOUT_MS ?? 120_000);
 
-// Permissive CORS so a browser app (e.g. mash on another origin) can call the
-// service. The service exposes no secrets and is a local dev/voice backend.
-const CORS_HEADERS = {
-  'access-control-allow-origin': '*',
-  'access-control-allow-methods': 'GET, POST, OPTIONS',
-  'access-control-allow-headers': 'content-type',
-} as const;
+// Permissive CORS so a browser app (e.g. mash on any localhost dev port) can call
+// the service. We REFLECT the request Origin rather than hardcoding one — Vite may
+// pick any port (5173, 5174, …), so an allow-list would break. The service exposes
+// no secrets and is a local dev/voice backend, so echoing the Origin is fine; it's
+// also more robust than `*` (works for credentialed requests). Falls back to `*`
+// when there's no Origin (curl / same-origin).
+function corsHeaders(req: IncomingMessage): Record<string, string> {
+  const origin = req.headers.origin;
+  const requestedHeaders = req.headers['access-control-request-headers'];
+  return {
+    'access-control-allow-origin': origin ?? '*',
+    'access-control-allow-methods': 'GET, POST, OPTIONS',
+    'access-control-allow-headers':
+      typeof requestedHeaders === 'string' && requestedHeaders.length > 0
+        ? requestedHeaders
+        : 'content-type',
+    vary: 'Origin',
+  };
+}
 
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
+function sendJson(
+  res: ServerResponse,
+  status: number,
+  body: unknown,
+  cors: Record<string, string>,
+): void {
   const payload = JSON.stringify(body);
-  res.writeHead(status, { 'content-type': 'application/json', ...CORS_HEADERS });
+  res.writeHead(status, { 'content-type': 'application/json', ...cors });
   res.end(payload);
 }
 
@@ -130,15 +147,16 @@ export function createVoiceServer(opts: ServerOptions = {}): Server {
   const bridgeTimeoutMs = opts.bridgeTimeoutMs ?? DEFAULT_BRIDGE_TIMEOUT;
 
   return createServer((req, res) => {
+    const cors = corsHeaders(req);
     void (async () => {
       try {
         if (req.method === 'OPTIONS') {
-          res.writeHead(204, CORS_HEADERS);
+          res.writeHead(204, cors);
           res.end();
           return;
         }
         if (req.method === 'GET' && req.url === '/health') {
-          sendJson(res, 200, { ok: true });
+          sendJson(res, 200, { ok: true }, cors);
           return;
         }
         if (req.method === 'POST' && req.url === '/tts') {
@@ -147,11 +165,11 @@ export function createVoiceServer(opts: ServerOptions = {}): Server {
           try {
             parsed = JSON.parse(body) as SynthRequest;
           } catch {
-            sendJson(res, 400, { error: 'invalid JSON body' });
+            sendJson(res, 400, { error: 'invalid JSON body' }, cors);
             return;
           }
           if (!parsed || typeof parsed.text !== 'string' || parsed.text.length === 0) {
-            sendJson(res, 400, { error: 'field "text" (non-empty string) is required' });
+            sendJson(res, 400, { error: 'field "text" (non-empty string) is required' }, cors);
             return;
           }
           const { wav, timeline } = await runBridge(
@@ -160,16 +178,21 @@ export function createVoiceServer(opts: ServerOptions = {}): Server {
             parsed.voice ?? {},
             bridgeTimeoutMs,
           );
-          sendJson(res, 200, {
-            audioWavBase64: wav.toString('base64'),
-            mouthTimeline: parseTimeline(timeline),
-            format: 'wav',
-          });
+          sendJson(
+            res,
+            200,
+            {
+              audioWavBase64: wav.toString('base64'),
+              mouthTimeline: parseTimeline(timeline),
+              format: 'wav',
+            },
+            cors,
+          );
           return;
         }
-        sendJson(res, 404, { error: 'not found' });
+        sendJson(res, 404, { error: 'not found' }, cors);
       } catch (err) {
-        sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
+        sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) }, cors);
       }
     })();
   });
