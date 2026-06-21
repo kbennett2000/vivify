@@ -63,6 +63,10 @@ export interface TtsTiming {
   captureReadyMs: number;
   /** Recording the null-sink monitor (parec) — runs concurrently with the bridge. */
   captureMs: number;
+  /** Stopping the capture: grace-end → parec actually closed (SIGTERM → 'close'). Proves it's fast. */
+  captureStopMs: number;
+  /** Building the WAV from captured PCM: wrap + trim leading silence (base64 is `encode`). */
+  buildMs: number;
   /** Building the WAV from captured PCM (wrap + trim) + base64 encode for the response. */
   encodeMs: number;
   /** Whole /tts handler, request → response. */
@@ -89,7 +93,7 @@ export function formatTtsTiming(t: TtsTiming): string {
       : `wineLoad=${t.wineLoadMs} teardown=${teardownMs}`;
   return (
     `total=${t.totalMs}ms (captureReady=${t.captureReadyMs} bridgeWall=${t.bridgeMs} ${gapPart} ` +
-    `capture=${t.captureMs} encode=${t.encodeMs}) ` +
+    `capture=${t.captureMs} captureStop=${t.captureStopMs} build=${t.buildMs} encode=${t.encodeMs}) ` +
     bridgePart
   );
 }

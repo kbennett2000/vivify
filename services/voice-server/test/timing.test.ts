@@ -85,6 +85,8 @@ describe('formatTtsTiming', () => {
       wineLoadMs: 200,
       captureReadyMs: 45,
       captureMs: 2100,
+      captureStopMs: 3,
+      buildMs: 4,
       encodeMs: 2,
       totalMs: 2310,
       bridge: {
@@ -99,11 +101,14 @@ describe('formatTtsTiming', () => {
 
     // Grand total.
     expect(out).toContain('total=2310ms');
-    // Server stages (Cycle 11 fix adds the capture-readiness gate).
+    // Server stages (Cycle 11 fix adds the capture-readiness gate; the follow-up adds
+    // captureStop — stopCapture duration — and build — wrap+trim).
     expect(out).toContain('captureReady=45');
     expect(out).toContain('bridgeWall=2300');
     expect(out).toContain('wineLoad=200');
     expect(out).toContain('capture=2100');
+    expect(out).toContain('captureStop=3');
+    expect(out).toContain('build=4');
     expect(out).toContain('encode=2');
     // teardown = max(0, bridgeMs − wineLoadMs − bridge.totalMs) = 2300 − 200 − 2000 = 100.
     expect(out).toContain('teardown=100');
@@ -120,6 +125,8 @@ describe('formatTtsTiming', () => {
       wineLoadMs: 100,
       captureReadyMs: 30,
       captureMs: 900,
+      captureStopMs: 2,
+      buildMs: 3,
       encodeMs: 1,
       totalMs: 1010,
       bridge: {
@@ -140,6 +147,8 @@ describe('formatTtsTiming', () => {
       wineLoadMs: 200,
       captureReadyMs: 45,
       captureMs: 2100,
+      captureStopMs: 3,
+      buildMs: 4,
       encodeMs: 2,
       totalMs: 2310,
       bridge: null,
@@ -151,6 +160,8 @@ describe('formatTtsTiming', () => {
     expect(out).toContain('bridgeWall=2300');
     expect(out).toContain('wineLoad=200');
     expect(out).toContain('capture=2100');
+    expect(out).toContain('captureStop=3');
+    expect(out).toContain('build=4');
     expect(out).toContain('encode=2');
     // No teardown when there's no bridge self-time to subtract.
     expect(out).not.toContain('teardown=');

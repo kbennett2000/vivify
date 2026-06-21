@@ -6,7 +6,7 @@
 // function's own output echoed back.
 
 import { describe, it, expect } from 'vitest';
-import { wrapPcmToWav, trimLeadingSilence, DEFAULT_PCM_FORMAT } from '../src/wav.js';
+import { wrapPcmToWav, trimLeadingSilence, wavDurationMs, DEFAULT_PCM_FORMAT } from '../src/wav.js';
 
 /** Build a little-endian s16 PCM buffer from sample values. */
 function pcm16(samples: number[]): Buffer {
@@ -213,5 +213,43 @@ describe('trimLeadingSilence', () => {
       expect(trimmed.length).toBe(wav.length);
       expect(trimmed.equals(wav)).toBe(true);
     });
+  });
+});
+
+describe('wavDurationMs (Cycle 11 follow-up clip diagnostic)', () => {
+  it('computes ms from data bytes ÷ byteRate for a known format (rate 1000, mono, 16-bit)', () => {
+    // 1000 frames at rate 1000 mono/16-bit = 2000 data bytes; byteRate = 1000*1*2 = 2000.
+    // 2000 / 2000 = 1.000s ⇒ 1000ms — a hand-computed value, not the function echoed back.
+    const FMT = { rate: 1000, channels: 1, bits: 16 };
+    const wav = wrapPcmToWav(Buffer.alloc(1000 * 2), FMT);
+    expect(wavDurationMs(wav)).toBe(1000);
+  });
+
+  it('computes ms at 44100/mono/16-bit from an exact byte count', () => {
+    // byteRate = 44100 * 1 * 2 = 88200 bytes/s. Pick 44100 data bytes ⇒ 44100/88200 = 0.5s.
+    // round(0.5 * 1000) = 500ms.
+    const wav = wrapPcmToWav(Buffer.alloc(44100), DEFAULT_PCM_FORMAT);
+    expect(wavDurationMs(wav)).toBe(500);
+  });
+
+  it('rounds to the nearest ms for a non-integer duration', () => {
+    // rate 1000 mono/16-bit ⇒ byteRate 2000. 7 frames = 14 data bytes ⇒ 14/2000 = 0.007s
+    // = 7ms exactly; use 3 bytes-worth-of-frames instead: 5 frames = 10 bytes ⇒ 5ms. To
+    // exercise rounding, rate 3000 mono/16-bit ⇒ byteRate 6000; 1000 data bytes ⇒
+    // 1000/6000 = 0.16666…s ⇒ round(166.66) = 167ms.
+    const FMT = { rate: 3000, channels: 1, bits: 16 };
+    const wav = wrapPcmToWav(Buffer.alloc(1000), FMT);
+    expect(wavDurationMs(wav)).toBe(167);
+  });
+
+  it('returns 0 for a header-only (empty-data) WAV', () => {
+    const wav = wrapPcmToWav(Buffer.alloc(0)); // 44-byte header, no samples
+    expect(wav.length).toBe(44);
+    expect(wavDurationMs(wav)).toBe(0);
+  });
+
+  it('returns 0 for a non-WAV buffer', () => {
+    expect(wavDurationMs(Buffer.from('not a wav at all, just bytes'))).toBe(0);
+    expect(wavDurationMs(Buffer.alloc(0))).toBe(0);
   });
 });

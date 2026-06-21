@@ -60,6 +60,12 @@ own bridge-only warmup (Cycle 10's primed only the engine and left the capture p
 clipped the first Speak's opening). Practical effect: subsequent Speaks are warm, and the first one
 is too once `[warmup] done` is logged.
 
+The entrypoint also starts a **keep-warm monitor reader** (`parec -d dummy.monitor >/dev/null &`)
+that runs for the container's lifetime. Each `/tts` spawns a fresh per-request `parec`, and
+`dummy.monitor` would otherwise cool between requests; the long-lived reader keeps the monitor
+continuously active so the first Speak's capture path stays hot (no cold-start clip, smaller
+`captureReady`). Multiple monitor readers fan out, so it doesn't disturb the per-request capture.
+
 **Single pass (Cycle 11).** The bridge used to synthesize each phrase **twice** — Pass A
 (`CLSID_MMAudioDest`, real-time playback) for the dense per-phoneme mouth events, then Pass B
 (`CLSID_AudioDestFile`) purely to write the WAV. Pass B is gone. The bridge now runs **one**
@@ -100,12 +106,19 @@ stages with the bridge's own per-stage `[timing]` line. Stages:
   daemon would remove it (future work — not done here).
 - `capture` — `parec` wall time: the null-sink recording (start → stop, incl. the grace tail);
   runs concurrently with the bridge.
+- `captureStop` — stopping the recorder: grace-end → `parec` actually closed (SIGTERM → `'close'`).
+  Expected ~0; proves stopping the capture isn't where time goes.
+- `build` — building the WAV from the captured PCM: wrap into a RIFF/WAVE header + trim leading
+  silence. (Base64-encoding the response is counted separately as `encode`.)
 - `teardown` — the time after the bridge's `[timing]` print until the process exits. Wine's
-  process teardown (audio device/DLL unload) is kernel-/Wine-side and runs *after* `[timing]`, so
-  the bridge's fast `_Exit` can't skip it (~2s of dead time). Instead the server **SIGKILLs the
-  bridge the moment it sees `[timing]` on stderr** — by then the timeline is written + closed and
-  all audio has played to the null sink, so the kill is treated as success. `teardown` is therefore
-  now ~0. (A real failure *before* `[timing]` still fails the request.)
+  process teardown (audio device/DLL unload) is kernel-/Wine-side and runs *after* `[timing]` (~2s
+  of dead time). The server no longer waits for it: it **RESOLVES the request the moment it sees a
+  complete `[timing]` line on stderr** — by then the timeline is written + closed and all audio has
+  played to the null sink — and **reaps the bridge in the background** (best-effort kill, not
+  awaited). It does **not** wait for the process's `'close'`, which lags ~2s under Wine even after a
+  kill (killing the `wine` launcher doesn't promptly close the underlying process's stderr pipe).
+  `teardown` is therefore now ~0. (A real failure *before* `[timing]` still fails the request via the
+  `'close'` path.)
 - `bridge[init=… passA=…(ttfb …) write=… self=…]` — the bridge's own sub-parts: engine COM
   init, the single real-time pass (with time-to-first-byte), timeline write, and the bridge's
   self-measured `main()` window. (There is **no** `passB`.)
@@ -114,6 +127,13 @@ stages with the bridge's own per-stage `[timing]` line. Stages:
 - `total` — whole handler.
 
 The bridge also still emits its `[mmaudio]` / event-count diagnostic lines next to `[timing]`.
+
+**Clip diagnostic (`[tts-audio]`).** Every `/tts` also logs
+`[tts-audio] wavMs=… timelineMs=… rawCaptureMs=… trimmedMs=…`: the final WAV's audio duration
+(`wavMs`) vs the mouth-timeline span (`timelineMs`). If `wavMs ≪ timelineMs`, the capture is
+**missing opening audio** (the WAV is shorter than the utterance). `rawCaptureMs` is the captured
+PCM duration before trim; `trimmedMs` is what leading-silence trim removed. Compare `wavMs` vs
+`timelineMs` on the first vs later Speaks to confirm the opening isn't clipped.
 
 **Reading the breakdown.** POST `/tts` a couple of times and compare the `[tts-timing]
 total=` values. The startup `warmUp` runs the full path once, so the first request after

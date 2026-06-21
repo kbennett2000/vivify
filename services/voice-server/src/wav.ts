@@ -139,6 +139,19 @@ export function trimLeadingSilence(wav: Buffer, opts: TrimOptions = {}): Buffer 
   return wrapPcmToWav(wav.subarray(start, dataEnd), fmt);
 }
 
+/**
+ * Audio duration of a PCM WAV in milliseconds (data bytes ÷ byte-rate). Used to diagnose clipping:
+ * compare against the mouth timeline's span — a WAV much shorter than the timeline means audio is
+ * missing from the capture. Returns 0 for an unparseable/empty WAV.
+ */
+export function wavDurationMs(wav: Buffer): number {
+  const view = parseWav(wav);
+  if (!view) return 0;
+  const blockAlign = (view.channels * view.bits) >> 3;
+  const byteRate = rateOf(wav) * blockAlign;
+  return byteRate > 0 ? Math.round((view.dataLength / byteRate) * 1000) : 0;
+}
+
 /** Read the sample rate from a WAV's fmt chunk (falls back to the default rate). */
 function rateOf(wav: Buffer): number {
   let offset = 12;

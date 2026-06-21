@@ -13,6 +13,9 @@ import type { TtsTiming } from '../src/timing.js';
 
 const fakeBridgePath = fileURLToPath(new URL('./fake-bridge.mjs', import.meta.url));
 const slowExitBridgePath = fileURLToPath(new URL('./fake-bridge-slow-exit.mjs', import.meta.url));
+const detachedHolderBridgePath = fileURLToPath(
+  new URL('./fake-bridge-detached-holder.mjs', import.meta.url),
+);
 const failBridgePath = fileURLToPath(new URL('./fail-bridge.mjs', import.meta.url));
 const hangBridgePath = fileURLToPath(new URL('./hang-bridge.mjs', import.meta.url));
 const fakeCapturePath = fileURLToPath(new URL('./fake-capture.mjs', import.meta.url));
@@ -216,12 +219,15 @@ describe('voice-server latency instrumentation (Cycle 10, fake bridge)', () => {
 
     // Server-observed stages are real wall-clock measurements: present and
     // non-negative (Cycle 11: readMs is gone, replaced by capture/wineLoad; the
-    // Cycle 11 fix adds captureReadyMs — parec spawn → its first sample).
+    // Cycle 11 fix adds captureReadyMs — parec spawn → its first sample; the Cycle 11
+    // follow-up adds captureStopMs — stopCapture duration — and buildMs — wrap+trim).
     for (const v of [
       t.bridgeMs,
       t.wineLoadMs,
       t.captureReadyMs,
       t.captureMs,
+      t.captureStopMs,
+      t.buildMs,
       t.encodeMs,
       t.totalMs,
     ]) {
@@ -477,6 +483,65 @@ describe('voice-server skips bridge teardown (Cycle 11 follow-up: SIGKILL on [ti
     // The deterministic proof of the teardown-skip fix: the bridge sleeps 3000ms before
     // exiting, but the server SIGKILLed it on `[timing]`, so the whole request finishes
     // well under that. The only real work is the 20ms capture grace + trivial I/O.
+    expect(elapsedMs).toBeLessThan(1500);
+  });
+});
+
+describe('voice-server resolves on [timing], not on bridge close', () => {
+  let server: Server;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    // fake-bridge-detached-holder replicates WINE: it emits `[timing]`, then exits
+    // immediately BUT leaves a detached grandchild holding the stderr pipe open ~3000ms,
+    // so the server-side stderr stream's 'end'/'close' is delayed ~3s even though the
+    // bridge process is already gone. If the server (regressed) waited for 'close', the
+    // request would block ~3s. The fix resolves the instant `[timing]` lands on stderr.
+    server = createVoiceServer({
+      bridgeCommand: `node ${detachedHolderBridgePath}`,
+      captureCommand,
+      captureGraceMs,
+      captureReadyTimeoutMs,
+    });
+    const port = await listenOnEphemeralPort(server);
+    baseUrl = `http://127.0.0.1:${port}`;
+  });
+
+  afterAll(async () => {
+    await closeServer(server);
+  });
+
+  it('POST /tts → 200 well before the stderr pipe closes (~3s), proving resolve-on-[timing]', async () => {
+    const t0 = Date.now();
+    const res = await fetch(`${baseUrl}/tts`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'resolve on timing, not on pipe close' }),
+    });
+    const elapsedMs = Date.now() - t0;
+
+    expect(res.status).toBe(200);
+
+    const json = (await res.json()) as TtsResponse;
+    expect(json.format).toBe('wav');
+
+    // Valid RIFF/WAVE built from the capture (the timeline written BEFORE the `[timing]`
+    // print is readable after the server SIGKILLs the bridge in the background).
+    const wav = Buffer.from(json.audioWavBase64, 'base64');
+    expect(wav.length).toBeGreaterThanOrEqual(44);
+    expect(wav.toString('ascii', 0, 4)).toBe('RIFF');
+    expect(wav.toString('ascii', 8, 12)).toBe('WAVE');
+
+    // The 3 canned events still round-trip.
+    expect(json.mouthTimeline).toEqual([
+      { timeMs: 0, shape: 0, width: 0 },
+      { timeMs: 50, shape: 5, width: 3 },
+      { timeMs: 120, shape: 2, width: 4 },
+    ]);
+
+    // The deterministic proof: the stderr pipe stays open ~3000ms (the detached holder),
+    // but the server resolved on the `[timing]` LINE — not on pipe-close — so the request
+    // finishes well under that. (Only the 20ms capture grace + trivial I/O is real work.)
     expect(elapsedMs).toBeLessThan(1500);
   });
 });

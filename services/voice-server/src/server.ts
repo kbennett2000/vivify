@@ -15,7 +15,7 @@ import type { VoiceConfig } from '@vivify/types';
 import { voiceToBridgeArgs } from './voice-args.js';
 import { parseTimeline } from './timeline.js';
 import { parseBridgeTiming, formatTtsTiming, type TtsTiming } from './timing.js';
-import { wrapPcmToWav, trimLeadingSilence } from './wav.js';
+import { wrapPcmToWav, trimLeadingSilence, wavDurationMs, DEFAULT_PCM_FORMAT } from './wav.js';
 
 export interface SynthRequest {
   text: string;
@@ -103,6 +103,14 @@ interface SynthResult {
   captureReadyMs: number;
   /** Capture (parec) wall time, ms. */
   captureMs: number;
+  /** Stopping the capture (grace-end → parec 'close'), ms. */
+  captureStopMs: number;
+  /** Building the WAV (wrap + trim leading silence), ms. */
+  buildMs: number;
+  /** Audio duration of the raw captured PCM (before trim), ms — for the clip diagnostic. */
+  rawCaptureMs: number;
+  /** Audio duration of the final (trimmed) WAV, ms — compare to the timeline span to detect clipping. */
+  wavMs: number;
 }
 
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -225,7 +233,6 @@ async function synthesize(
 
     const tSpawn = Date.now();
     let firstByteAt = 0;
-    let killedAfterDone = false;
     const stderr = await new Promise<string>((resolve, reject) => {
       const child = spawn(program, args, { stdio: ['ignore', 'ignore', 'pipe'] });
       let buf = '';
@@ -244,36 +251,44 @@ async function synthesize(
       child.stderr.on('data', (chunk) => {
         if (firstByteAt === 0) firstByteAt = Date.now(); // `[boot]` ≈ main() start
         buf += String(chunk);
-        // Cycle 11 fix: `[timing] ` is the bridge's definitive SUCCESS marker — it emits that line
-        // ONLY when rc == 0, as its last output, after the timeline file is written + closed and all
-        // audio has played to the null sink. After it, Wine spends ~2s tearing down the audio
-        // device/DLLs on process exit — pure dead time the bridge's `_Exit` can't skip (kernel-side).
-        // So once we see it, the useful work is done: SIGKILL the bridge to skip that teardown
-        // instead of waiting for its slow close. (A failure path never prints `[timing] `, so it
-        // still reaches the non-zero-exit reject below → 500.) Match the trailing space so a stray
-        // mention of the word can't trigger a premature kill.
-        if (!killedAfterDone && buf.includes('[timing] ')) {
-          killedAfterDone = true;
-          child.kill('SIGKILL');
+        // Cycle 11 fix: RESOLVE the moment the bridge emits a complete `[timing] …` line — its
+        // definitive SUCCESS marker (printed only when rc == 0, as its last output, after the
+        // timeline is written + closed and all audio has played to the null sink). Do NOT wait for
+        // the process to `'close'`: after `[timing]`, Wine spends ~2s tearing down the audio
+        // device/DLLs on exit, and SIGKILL of the `wine` launcher doesn't promptly close the
+        // underlying Windows process's stderr pipe — so `'close'` lags ~2s. We have everything we
+        // need, so resolve now and reap the child in the background (the teardown happens off the
+        // request's critical path). A failure path never prints `[timing] `, so it still falls
+        // through to the non-zero-exit reject below → 500. (`[^\n]*\n` ensures the full line is in.)
+        if (/\[timing\] [^\n]*\n/.test(buf)) {
+          finish(() => resolve(buf));
+          child.kill('SIGKILL'); // best-effort; not awaited
+          child.unref();
         }
       });
       child.on('error', (err) => finish(() => reject(err)));
       child.on('close', (code) => {
-        // `killedAfterDone` exits by signal (non-zero), but it's a deliberate success.
-        if (code === 0 || killedAfterDone) {
-          const diag = buf.trim();
-          if (diag) console.log(`[bridge] ${diag}`);
-          finish(() => resolve(buf));
-        } else
+        // Only reached when we DIDN'T resolve on `[timing]` (failure/early-exit path).
+        if (code === 0) finish(() => resolve(buf));
+        else
           finish(() => reject(new Error(`bridge exited with code ${code}: ${buf.slice(0, 500)}`)));
       });
     });
     const bridgeMs = Date.now() - tSpawn;
+    // Surface the bridge's own diagnostics ([boot]/[mmaudio]/[timing]) once resolved — single log
+    // site that covers both the resolve-on-`[timing]` path (where `'close'` hasn't fired yet) and a
+    // clean natural close. (On failure the promise rejects, and the error carries the stderr tail.)
+    const diag = stderr.trim();
+    if (diag) console.log(`[bridge] ${diag}`);
     const wineLoadMs = firstByteAt ? firstByteAt - tSpawn : 0;
 
-    // Let the null sink flush the audio tail, then stop recording and assemble the WAV.
+    // Let the null sink flush the audio tail, then stop recording and assemble the WAV. (The bridge
+    // is resolved on `[timing]`, after AudioStop — all audio has already played — so the grace only
+    // covers the pulse buffer tail; stopping the recorder here loses nothing.)
     await delay(graceMs);
+    const tStop = Date.now();
     await stopCapture();
+    const captureStopMs = Date.now() - tStop;
     const captureMs = Date.now() - tCapture;
 
     const pcm = Buffer.concat(pcmChunks);
@@ -283,13 +298,31 @@ async function synthesize(
         `null-sink capture produced no audio (parec: ${captureErr.trim().slice(0, 200) || 'no stderr'})`,
       );
     }
+    const tBuild = Date.now();
     const wav = trimLeadingSilence(wrapPcmToWav(pcm));
+    const buildMs = Date.now() - tBuild;
     if (wav.length <= 44) {
       throw new Error('null-sink capture was entirely silent — no audio aligned to the timeline');
     }
+    const pcmByteRate =
+      (DEFAULT_PCM_FORMAT.rate * DEFAULT_PCM_FORMAT.channels * DEFAULT_PCM_FORMAT.bits) >> 3;
+    const rawCaptureMs = Math.round((pcm.length / pcmByteRate) * 1000);
+    const wavMs = wavDurationMs(wav);
 
     const timeline: unknown = JSON.parse(await readFile(timelinePath, 'utf8'));
-    return { wav, timeline, stderr, bridgeMs, wineLoadMs, captureReadyMs, captureMs };
+    return {
+      wav,
+      timeline,
+      stderr,
+      bridgeMs,
+      wineLoadMs,
+      captureReadyMs,
+      captureMs,
+      captureStopMs,
+      buildMs,
+      rawCaptureMs,
+      wavMs,
+    };
   } finally {
     await stopCapture(); // backstop: never leak parec, even on the bridge-failure path
     await rm(dir, { recursive: true, force: true });
@@ -346,16 +379,27 @@ export function createVoiceServer(opts: ServerOptions = {}): Server {
             sendJson(res, 400, { error: 'field "text" (non-empty string) is required' }, cors);
             return;
           }
-          const { wav, timeline, stderr, bridgeMs, wineLoadMs, captureReadyMs, captureMs } =
-            await synthesize(
-              bridgeCommand,
-              captureCommand,
-              parsed.text,
-              parsed.voice ?? {},
-              bridgeTimeoutMs,
-              captureGraceMs,
-              captureReadyTimeoutMs,
-            );
+          const {
+            wav,
+            timeline,
+            stderr,
+            bridgeMs,
+            wineLoadMs,
+            captureReadyMs,
+            captureMs,
+            captureStopMs,
+            buildMs,
+            rawCaptureMs,
+            wavMs,
+          } = await synthesize(
+            bridgeCommand,
+            captureCommand,
+            parsed.text,
+            parsed.voice ?? {},
+            bridgeTimeoutMs,
+            captureGraceMs,
+            captureReadyTimeoutMs,
+          );
           const mouthTimeline = parseTimeline(timeline);
           const tEncode = Date.now();
           const audioWavBase64 = wav.toString('base64');
@@ -369,12 +413,22 @@ export function createVoiceServer(opts: ServerOptions = {}): Server {
             wineLoadMs,
             captureReadyMs,
             captureMs,
+            captureStopMs,
+            buildMs,
             encodeMs,
             totalMs: Date.now() - tReq,
             bridge: parseBridgeTiming(stderr),
           };
           console.log(
             `[tts-timing] ${mouthTimeline.length} events, ${wav.length}B wav | ${formatTtsTiming(timing)}`,
+          );
+          // Clip diagnostic: the final WAV's audio duration vs the mouth-timeline span. If the opening
+          // is clipped, wavMs ≪ timelineMs quantifies how much audio is missing from the capture.
+          const timelineMs = mouthTimeline.length
+            ? mouthTimeline[mouthTimeline.length - 1]!.timeMs
+            : 0;
+          console.log(
+            `[tts-audio] wavMs=${wavMs} timelineMs=${timelineMs} rawCaptureMs=${rawCaptureMs} trimmedMs=${rawCaptureMs - wavMs}`,
           );
           opts.onTiming?.(timing);
 
