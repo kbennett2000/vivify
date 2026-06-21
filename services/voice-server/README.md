@@ -43,6 +43,36 @@ curl -sX POST localhost:8080/tts -H 'content-type: application/json' \
 **GO** iff: authentic TruVoice WAV **and** a non-empty `mouthTimeline` aligned to the
 audio. WAV-only or empty/garbage timeline = **NO-GO** (report it).
 
+## Latency: warm engine + per-request timing (Cycle 10)
+
+**Warm engine.** The container keeps Xvfb (`:99`) and `wineserver` **persistent** for its
+lifetime and runs a best-effort **warmup synth** at startup (`entrypoint.sh`), instead of
+cold-starting Wine on every request. The per-request bridge command is therefore a plain
+`wine …/sapi4-mouth.exe` (no `xvfb-run -a`), still overridable via `VIVIFY_SAPI4_BRIDGE`.
+Practical effect: the **first** Speak after `docker run` is the warmup-affected one;
+subsequent Speaks are warm.
+
+**Per-request timing.** Every `POST /tts` logs a `[tts-timing]` line combining the server
+stages with the bridge's own per-stage `[timing]` line. Stages:
+- `initMs` — per-request engine COM init inside the bridge process (warming does **not**
+  remove this; a future persistent-engine daemon would).
+- `passA_totalMs` — the real-time `MMAudioDest` pass; ≈ utterance length. This is the
+  inherent floor for dense lip-sync (the dense viseme stream only exists during real-time
+  playback).
+- `passB_totalMs` — the file-audio (`AudioDestFile`) WAV pass; serial overhead on top of
+  Pass A.
+- `writeMs` — bridge timeline write.
+- `bridgeWall` / `read` / `encode` — server-side: bridge spawn→close wall time, WAV
+  `readFile`, base64 encode.
+- `total` — whole handler.
+
+The bridge also still emits its `[mmaudio]` / `[file-wav] events=…` diagnostic lines next
+to `[timing]`.
+
+**Reading cold vs warm.** POST `/tts` a couple of times and compare the `[tts-timing]
+total=` values; the first request after container start reflects the warmup. The collected
+numbers and the cold-vs-warm delta live in `../../docs/cycles/cycle-10-latency.md`.
+
 ## Endpoints
 - `GET /health` → `{ "ok": true }`
 - `POST /tts` `{ text: string, voice?: VoiceConfig }` →

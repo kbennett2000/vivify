@@ -45,4 +45,12 @@ const timeline = {
   ],
 };
 writeFileSync(timelinePath, JSON.stringify(timeline));
+
+// Cycle 10: emit a representative `[timing]` stderr line (mirrors the real
+// sapi4-mouth.cpp output) so the server flow can be exercised end-to-end —
+// parseBridgeTiming(stderr) → onTiming. Numbers are arbitrary-but-fixed; the
+// server test asserts passA_totalMs=300 and totalMs=400 round-trip through.
+process.stderr.write(
+  '[timing] initMs=5 passA_ttfbMs=10 passA_totalMs=300 passB_ttfbMs=4 passB_totalMs=80 writeMs=1 totalMs=400\n',
+);
 process.exit(0);
