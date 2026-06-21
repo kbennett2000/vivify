@@ -18,8 +18,8 @@ services/voice-server/prefix/
 services/voice-server/bridge/*.exe
 services/voice-server/bridge/*.dll
 services/voice-server/bridge/*.o
-# User-supplied SAPI4 SDK (headers/libs) for compiling the bridge
-services/voice-server/sapi4-sdk/
+# User-supplied SAPI4 SDK header (speech.h) lives under the gitignored vendor/ dir
+# (services/voice-server/vendor/sdk/include/speech.h) — already covered by vendor/ above.
 # Extracted Microsoft assets (bitmaps/sounds pulled out of .acs during dev)
 **/fixtures/**/*.bmp
 **/fixtures/**/*.wav

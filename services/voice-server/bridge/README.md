@@ -3,30 +3,36 @@
 `sapi4-mouth.cpp` is vivify's own (MIT) Windows console program that the voice
 service runs under Wine. It speaks text with a SAPI4 voice (L&H TruVoice) and
 writes a **WAV** plus a **mouth/viseme timeline JSON** (captured from the SAPI4
-`ITTSNotifySinkW::Visual` / `TTSMOUTH` callback). See `../../docs/cycles/cycle-5-voice.md`.
+`ITTSNotifySink::Visual` / `TTSMOUTH` callback). See `../../docs/cycles/cycle-5-voice.md`.
 
-## Status — UNVERIFIED
-This was written from the documented SAPI4 low-level TTS API but has **not** been
-compiled or run in vivify's dev sandbox (no Wine/SAPI4 there). It is the GO/NO-GO
-artifact and must be built + validated in the Docker/Wine image. Spots needing
-confirmation against the actual SAPI4 SDK headers are marked `// CONFIRM:` —
-notably the `IAudioDest`/`IAudio` method set, the `Select`/`Register`/`TextData`
-signatures, `TTSMOUTH` field names, and the SAPI4 GUIDs/CLSIDs.
+It is written against the **real** SAPI4 SDK header `<speech.h>`. The WAV is written
+by SAPI4 itself via `CLSID_AudioDestFile` → `IAudioFile::Set(path)`; the voice is
+selected via `CLSID_TTSEnumerator` → `ITTSEnum::Select`; mouth/viseme timing comes
+from a registered `ITTSNotifySink`. Built **ANSI** (the interface macros resolve to
+the `…A` forms). The API shapes were verified against `speech.h` itself and the SAPI4
+usage in TETYYS/SAPI4 and DoubleAgent.
 
-## Build requirements (supplied by you — never committed)
-- **SAPI4 SDK headers + import libs** (Microsoft Speech SDK 4.0): provide
-  `ITTSEnumW`, `ITTSCentralW`, `ITTSAttributesW`, `ITTSNotifySinkW`, `IAudio(Dest)`,
-  `TTSMODEINFOW`, `TTSMOUTH`, and the CLSID/IID symbols. Point the compiler's
-  include/lib path at the SDK.
-- A Windows C++ toolchain that targets Wine — **winegcc/MinGW** (used in the
-  Dockerfile) or MSVC. SAPI4/TruVoice are **32-bit**, so build **32-bit**.
+## You must supply: speech.h (Microsoft Speech SDK 4.0) — never committed
+Drop the header at **`services/voice-server/vendor/sdk/include/speech.h`** (under the
+gitignored `vendor/`; the Dockerfile sets `SAPI4_SDK=/opt/vendor/sdk` and `-I`s it). It
+is MS IP, so it is **not** committed — same model as the engine installers.
 
-## Compile (inside the Docker image; example)
+Where to get it: the Microsoft Speech SDK 4.0 (the same source as the runtime; see
+`../../docs/legal-and-assets.md`). A copy is also vendored in public projects such as
+miranda-ng (`plugins/WinterSpeak/src/SAPI 4.0/Include/speech.h`). `<speech.h>` is
+self-contained (it only needs the standard Windows headers); if your copy pulls in a
+sibling SDK header, place that alongside it too.
+
+## Build (inside the Docker image)
 ```
-winegcc -m32 -municode -O2 -o sapi4-mouth.exe sapi4-mouth.cpp \
-  -I"$SAPI4_SDK/include" -L"$SAPI4_SDK/lib" -lole32 -loleaut32 -luuid -lwinmm
+i686-w64-mingw32-g++ -O2 -static -static-libgcc -static-libstdc++ \
+  -o sapi4-mouth.exe sapi4-mouth.cpp -I"$SAPI4_SDK/include" \
+  -lole32 -loleaut32 -luuid -lwinmm
 ```
-(Adjust `-I/-L` to your SAPI4 SDK; add any SAPI4 import lib it requires.)
+Static-linking is required: a dynamically-linked mingw C++ exe imports
+`libstdc++-6.dll`/`libgcc_s_*.dll`/`libwinpthread-1.dll`, which aren't in the Wine
+prefix → Wine fails to load it with `c0000135`. GUIDs come from `<initguid.h>`, so no
+SAPI4 import lib is needed.
 
 ## Run
 ```
@@ -34,4 +40,5 @@ wine sapi4-mouth.exe --text-file in.txt --wav out.wav --timeline out.json \
   [--voice <modeGuid>] [--speed N] [--pitch N]
 ```
 The Node service (`../src/server.ts`) invokes this per request under
-`xvfb-run -a wine` and reads `out.wav` + `out.json`.
+`xvfb-run -a wine` and reads `out.wav` + `out.json`. `--voice` is a SAPI4 mode GUID
+(`{…}`); if omitted/unparseable, the first enumerated voice is used.

@@ -28,7 +28,7 @@ RUN dpkg --add-architecture i386 && apt-get update && apt-get install -y --no-in
 ENV WINEARCH=win32 \
     WINEPREFIX=/opt/wineprefix \
     WINEDEBUG=-all \
-    SAPI4_SDK=/opt/sapi4-sdk
+    SAPI4_SDK=/opt/vendor/sdk
 
 WORKDIR /opt/vivify
 
@@ -94,16 +94,21 @@ RUN set -eu; \
     echo "OK: SAPI4 + TruVoice present and registered."
 # (If your SAPI4 SDK headers/libs are supplied, COPY them to $SAPI4_SDK as well.)
 
-# --- compile the bridge (32-bit, against the SAPI4 SDK) ---
+# --- compile the bridge (32-bit, against the real SAPI4 SDK header) ---
+# Needs speech.h (Microsoft Speech SDK 4.0) at $SAPI4_SDK/include — user-supplied
+# under the gitignored vendor/sdk/ (already COPY'd to /opt/vendor; see bridge/README.md).
 # STATIC-link the C++ runtime: a dynamically-linked mingw exe pulls in libstdc++-6.dll /
 # libgcc_s_*.dll / libwinpthread-1.dll, which aren't in the Wine prefix — Wine then fails
 # to open the exe with c0000135 (STATUS_DLL_NOT_FOUND) before the engine is even reached.
-# `set -e` + the trailing `test -f` make a failed compile abort the build (no silent miss).
+# Build ANSI (no -municode): the SAPI4 interface macros resolve to the *A* forms the code
+# targets. `set -e` + the trailing `test -f` make a failed compile abort the build.
 COPY bridge/ /opt/vivify/bridge/
 RUN set -eux; cd /opt/vivify/bridge; \
-    i686-w64-mingw32-g++ -municode -O2 -static -static-libgcc -static-libstdc++ \
+    test -f "$SAPI4_SDK/include/speech.h" \
+      || { echo "FATAL: speech.h missing — drop the SAPI4 SDK header at services/voice-server/vendor/sdk/include/speech.h (see bridge/README.md)"; exit 1; }; \
+    i686-w64-mingw32-g++ -O2 -static -static-libgcc -static-libstdc++ \
       -o sapi4-mouth.exe sapi4-mouth.cpp \
-      -I"$SAPI4_SDK/include" -L"$SAPI4_SDK/lib" -lole32 -loleaut32 -luuid -lwinmm; \
+      -I"$SAPI4_SDK/include" -lole32 -loleaut32 -luuid -lwinmm; \
     test -f sapi4-mouth.exe
 
 # --- the Node HTTP server ---
