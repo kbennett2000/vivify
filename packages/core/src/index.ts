@@ -13,6 +13,18 @@ export type { Agent, AgentEvent, SpeakOptions, MoveOptions, CharacterBundleRef }
 
 export { StubTtsProvider } from './provider.js';
 export { createAgent } from './agent.js';
+export type { CreateAgentOptions } from './agent.js';
+
+// Engine building blocks (pure; useful for advanced consumers and tested directly).
+export { Playback, nextFrameIndex, playableLength } from './playback.js';
+export type { Rng, PlaybackOptions } from './playback.js';
+export { ActionQueue } from './queue.js';
+export type { QueuedAction } from './queue.js';
+export { wrapText } from './wrap.js';
+export { animationForState, directionTo, moveState, gestureState } from './states.js';
+export type { Direction } from './states.js';
+export { realClock } from './clock.js';
+export type { Clock } from './clock.js';
 
 // Shared contracts re-exported for convenience; canonical home is @vivify/types.
 export type {

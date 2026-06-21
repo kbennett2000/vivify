@@ -17,9 +17,14 @@
   "scripts": {
     "typecheck": "tsc --build --pretty && tsc -p tsconfig.test.json",
     "test": "vitest run --passWithNoTests",
+    "dev": "tsc --build && vite serve dev",
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
+    "@vivify/acs": "workspace:*",
     "@vivify/types": "workspace:*"
+  },
+  "devDependencies": {
+    "vite": "^6.0.5"
   }
 }
