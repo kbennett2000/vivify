@@ -67,6 +67,10 @@ importers:
       '@vivify/types':
         specifier: workspace:*
         version: link:../types
+    devDependencies:
+      vite:
+        specifier: ^6.0.5
+        version: 6.4.3(@types/node@22.20.0)(tsx@4.22.4)
 
   packages/types: {}
 
