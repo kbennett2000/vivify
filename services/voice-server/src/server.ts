@@ -225,6 +225,7 @@ async function synthesize(
 
     const tSpawn = Date.now();
     let firstByteAt = 0;
+    let killedAfterDone = false;
     const stderr = await new Promise<string>((resolve, reject) => {
       const child = spawn(program, args, { stdio: ['ignore', 'ignore', 'pipe'] });
       let buf = '';
@@ -243,10 +244,23 @@ async function synthesize(
       child.stderr.on('data', (chunk) => {
         if (firstByteAt === 0) firstByteAt = Date.now(); // `[boot]` ≈ main() start
         buf += String(chunk);
+        // Cycle 11 fix: `[timing] ` is the bridge's definitive SUCCESS marker — it emits that line
+        // ONLY when rc == 0, as its last output, after the timeline file is written + closed and all
+        // audio has played to the null sink. After it, Wine spends ~2s tearing down the audio
+        // device/DLLs on process exit — pure dead time the bridge's `_Exit` can't skip (kernel-side).
+        // So once we see it, the useful work is done: SIGKILL the bridge to skip that teardown
+        // instead of waiting for its slow close. (A failure path never prints `[timing] `, so it
+        // still reaches the non-zero-exit reject below → 500.) Match the trailing space so a stray
+        // mention of the word can't trigger a premature kill.
+        if (!killedAfterDone && buf.includes('[timing] ')) {
+          killedAfterDone = true;
+          child.kill('SIGKILL');
+        }
       });
       child.on('error', (err) => finish(() => reject(err)));
       child.on('close', (code) => {
-        if (code === 0) {
+        // `killedAfterDone` exits by signal (non-zero), but it's a deliberate success.
+        if (code === 0 || killedAfterDone) {
           const diag = buf.trim();
           if (diag) console.log(`[bridge] ${diag}`);
           finish(() => resolve(buf));
@@ -384,10 +398,40 @@ export function createVoiceServer(opts: ServerOptions = {}): Server {
   });
 }
 
+/**
+ * Cycle 11 fix: prime the WHOLE capture pipeline once at startup — parec connect + the
+ * null-sink monitor + winepulse playback + trim + the engine — by running one real synthesis.
+ * The container's engine warmup (entrypoint) primed only the engine, so the FIRST real Speak
+ * still cold-started the capture path and clipped its opening; this warms it via the exact
+ * production path. Best-effort: failures only mean the first Speak runs colder, never a crash.
+ */
+export async function warmUp(opts: ServerOptions = {}): Promise<void> {
+  const t0 = Date.now();
+  console.log('[warmup] priming capture + engine pipeline…');
+  try {
+    await synthesize(
+      opts.bridgeCommand ?? DEFAULT_BRIDGE,
+      opts.captureCommand ?? DEFAULT_CAPTURE,
+      'warm up',
+      {},
+      opts.bridgeTimeoutMs ?? DEFAULT_BRIDGE_TIMEOUT,
+      opts.captureGraceMs ?? DEFAULT_CAPTURE_GRACE,
+      opts.captureReadyTimeoutMs ?? DEFAULT_CAPTURE_READY,
+    );
+    console.log(`[warmup] done in ${Date.now() - t0}ms`);
+  } catch (err) {
+    console.warn(
+      `[warmup] failed (first real Speak may be colder): ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
 export function start(port = Number(process.env.PORT ?? 8080), opts: ServerOptions = {}): Server {
   const server = createVoiceServer(opts);
   server.listen(port, () => {
     console.log(`vivify voice-server listening on :${port}`);
+    // Background so /health is up immediately; the first real Speak lands after this completes.
+    void warmUp(opts);
   });
   return server;
 }

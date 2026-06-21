@@ -383,10 +383,15 @@ int main(int argc, char** argv) {
   // Cycle 10/11: one machine-readable per-stage breakdown the server parses + logs (timing.ts).
   // passA_total ≈ utterance length (the inherent real-time floor); init is the per-request
   // engine COM init. Pass B is gone (single pass) — passB_* dropped.
+  // The server treats `[timing]` as the bridge's definitive SUCCESS marker (it SIGKILLs us on
+  // sight to skip Wine teardown), so emit it ONLY when rc == 0 — never on a failure path. The
+  // timeline file is already written + fclosed above, so it's complete when this prints.
   const DWORD totalMs = GetTickCount() - tProcStart;
-  fprintf(stderr,
-          "[timing] initMs=%lu passA_ttfbMs=%lu passA_totalMs=%lu writeMs=%lu totalMs=%lu\n",
-          initMs, passAttfbMs, passAtotalMs, writeMs, totalMs);
+  if (rc == 0) {
+    fprintf(stderr,
+            "[timing] initMs=%lu passA_ttfbMs=%lu passA_totalMs=%lu writeMs=%lu totalMs=%lu\n",
+            initMs, passAttfbMs, passAtotalMs, writeMs, totalMs);
+  }
 
   // Cycle 11 (WIN 2): fast exit. The synthesis is done and the timeline is written; skip the
   // slow graceful teardown (CoUninitialize + TruVoice/MMAudioDest DLL unload + device close/

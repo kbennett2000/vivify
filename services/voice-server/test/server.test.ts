@@ -8,10 +8,11 @@
 import { fileURLToPath } from 'node:url';
 import type { Server } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createVoiceServer } from '../src/server.js';
+import { createVoiceServer, warmUp } from '../src/server.js';
 import type { TtsTiming } from '../src/timing.js';
 
 const fakeBridgePath = fileURLToPath(new URL('./fake-bridge.mjs', import.meta.url));
+const slowExitBridgePath = fileURLToPath(new URL('./fake-bridge-slow-exit.mjs', import.meta.url));
 const failBridgePath = fileURLToPath(new URL('./fail-bridge.mjs', import.meta.url));
 const hangBridgePath = fileURLToPath(new URL('./hang-bridge.mjs', import.meta.url));
 const fakeCapturePath = fileURLToPath(new URL('./fake-capture.mjs', import.meta.url));
@@ -421,5 +422,87 @@ describe('voice-server CORS (browser access)', () => {
     const res = await fetch(`${baseUrl}/health`);
     expect(res.status).toBe(200);
     expect(res.headers.get('access-control-allow-origin')).toBe('*');
+  });
+});
+
+describe('voice-server skips bridge teardown (Cycle 11 follow-up: SIGKILL on [timing])', () => {
+  let server: Server;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    // The slow-exit bridge writes the timeline + emits `[timing]`, then SLEEPS ~3000ms
+    // before exiting (simulating Wine's slow teardown). The server's fix watches stderr
+    // and SIGKILLs the bridge the moment it sees `[timing]`, so the request must NOT wait
+    // out that 3s close. The capture is the normal fast fake.
+    server = createVoiceServer({
+      bridgeCommand: `node ${slowExitBridgePath}`,
+      captureCommand,
+      captureGraceMs,
+      captureReadyTimeoutMs,
+    });
+    const port = await listenOnEphemeralPort(server);
+    baseUrl = `http://127.0.0.1:${port}`;
+  });
+
+  afterAll(async () => {
+    await closeServer(server);
+  });
+
+  it('POST /tts → 200 well before the bridge’s 3000ms slow exit (server SIGKILLs on [timing])', async () => {
+    const t0 = Date.now();
+    const res = await fetch(`${baseUrl}/tts`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'kill me on timing, do not wait for teardown' }),
+    });
+    const elapsedMs = Date.now() - t0;
+
+    expect(res.status).toBe(200);
+
+    const json = (await res.json()) as TtsResponse;
+    // Valid RIFF/WAVE built from the capture (proves the timeline file written BEFORE the
+    // `[timing]` print is readable after the SIGKILL — the kill races nothing on disk).
+    const wav = Buffer.from(json.audioWavBase64, 'base64');
+    expect(wav.length).toBeGreaterThanOrEqual(44);
+    expect(wav.toString('ascii', 0, 4)).toBe('RIFF');
+    expect(wav.toString('ascii', 8, 12)).toBe('WAVE');
+
+    // The 3 canned events still round-trip — the bridge's useful work completed before kill.
+    expect(json.mouthTimeline).toEqual([
+      { timeMs: 0, shape: 0, width: 0 },
+      { timeMs: 50, shape: 5, width: 3 },
+      { timeMs: 120, shape: 2, width: 4 },
+    ]);
+
+    // The deterministic proof of the teardown-skip fix: the bridge sleeps 3000ms before
+    // exiting, but the server SIGKILLed it on `[timing]`, so the whole request finishes
+    // well under that. The only real work is the 20ms capture grace + trivial I/O.
+    expect(elapsedMs).toBeLessThan(1500);
+  });
+});
+
+describe('warmUp (Cycle 11 follow-up: prime the pipeline, best-effort)', () => {
+  it('resolves without throwing against a working bridge + capture', async () => {
+    await expect(
+      warmUp({
+        bridgeCommand: `node ${fakeBridgePath}`,
+        captureCommand,
+        captureGraceMs,
+        captureReadyTimeoutMs,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('swallows errors and still resolves when the capture produces no audio (best-effort)', async () => {
+    // fake-capture-empty never streams a sample → synthesize() rejects, but warmUp must
+    // swallow that (a cold first Speak, never a crash). A short readiness timeout keeps it fast.
+    await expect(
+      warmUp({
+        bridgeCommand: `node ${fakeBridgePath}`,
+        captureCommand: `node ${emptyCapturePath}`,
+        captureGraceMs,
+        captureReadyTimeoutMs: 300,
+      }),
+    ).resolves.toBeUndefined();
   });
 });

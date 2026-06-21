@@ -46,11 +46,19 @@ audio. WAV-only or empty/garbage timeline = **NO-GO** (report it).
 ## Latency: warm engine + per-request timing (Cycles 10–11)
 
 **Warm engine (Cycle 10).** The container keeps Xvfb (`:99`) and `wineserver` **persistent**
-for its lifetime and runs a best-effort **warmup synth** at startup (`entrypoint.sh`), instead
-of cold-starting Wine on every request. The per-request bridge command is therefore a plain
-`wine …/sapi4-mouth.exe` (no `xvfb-run -a`), still overridable via `VIVIFY_SAPI4_BRIDGE`.
-Practical effect: the **first** Speak after `docker run` is the warmup-affected one;
-subsequent Speaks are warm.
+for its lifetime instead of cold-starting Wine on every request. The per-request bridge command
+is therefore a plain `wine …/sapi4-mouth.exe` (no `xvfb-run -a`), still overridable via
+`VIVIFY_SAPI4_BRIDGE`.
+
+**Full-pipeline warmup (Cycle 11).** At startup the **server** (not the entrypoint) runs one real
+synthesis over the whole capture+engine path — `parec` + the null-sink monitor + winepulse playback
++ trim + the engine — via `warmUp` in `src/server.ts`. This warms the **entire** `/tts` path, so the
+**first** real Speak after `docker run` isn't cold. The container logs `[warmup] priming…` then
+`[warmup] done in Nms`; warmup runs in the background after the port is listening, so `/health` is up
+immediately and the first real Speak lands once warmup completes. The entrypoint no longer does its
+own bridge-only warmup (Cycle 10's primed only the engine and left the capture path cold, which
+clipped the first Speak's opening). Practical effect: subsequent Speaks are warm, and the first one
+is too once `[warmup] done` is logged.
 
 **Single pass (Cycle 11).** The bridge used to synthesize each phrase **twice** — Pass A
 (`CLSID_MMAudioDest`, real-time playback) for the dense per-phoneme mouth events, then Pass B
@@ -92,8 +100,12 @@ stages with the bridge's own per-stage `[timing]` line. Stages:
   daemon would remove it (future work — not done here).
 - `capture` — `parec` wall time: the null-sink recording (start → stop, incl. the grace tail);
   runs concurrently with the bridge.
-- `teardown` — the time after the bridge's timing print until the process exits, now closed by
-  the bridge's fast `_Exit` (it skips COM/DLL unload + device drain; the OS reclaims them).
+- `teardown` — the time after the bridge's `[timing]` print until the process exits. Wine's
+  process teardown (audio device/DLL unload) is kernel-/Wine-side and runs *after* `[timing]`, so
+  the bridge's fast `_Exit` can't skip it (~2s of dead time). Instead the server **SIGKILLs the
+  bridge the moment it sees `[timing]` on stderr** — by then the timeline is written + closed and
+  all audio has played to the null sink, so the kill is treated as success. `teardown` is therefore
+  now ~0. (A real failure *before* `[timing]` still fails the request.)
 - `bridge[init=… passA=…(ttfb …) write=… self=…]` — the bridge's own sub-parts: engine COM
   init, the single real-time pass (with time-to-first-byte), timeline write, and the bridge's
   self-measured `main()` window. (There is **no** `passB`.)
@@ -104,8 +116,9 @@ stages with the bridge's own per-stage `[timing]` line. Stages:
 The bridge also still emits its `[mmaudio]` / event-count diagnostic lines next to `[timing]`.
 
 **Reading the breakdown.** POST `/tts` a couple of times and compare the `[tts-timing]
-total=` values; the first request after container start reflects the warmup. Real before/after
-latency numbers are operator-collected (no Wine/PulseAudio in CI) in the cycle doc's table:
+total=` values. The startup `warmUp` runs the full path once, so the first request after
+`[warmup] done` should already be warm (not cold). Real before/after latency numbers are
+operator-collected (no Wine/PulseAudio in CI) in the cycle doc's table:
 `../../docs/cycles/cycle-10-latency.md` (Cycle 10) and
 `../../docs/cycles/cycle-11-latency-singlepass.md` (Cycle 11).
 

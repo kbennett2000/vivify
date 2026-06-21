@@ -63,6 +63,19 @@ Fix (`src/server.ts`, `src/wav.ts`):
   rather than a clipped or faked WAV.
 - **Timing.** `[tts-timing]` now includes `captureReady=` (the gate paid before synthesis).
 
+### Fix: first-Speak cold capture
+The **first** Speak after container start still clipped its opening, even with the readiness gate. Root
+cause: the startup warmup primed only the **engine** (it paged in the TruVoice DLLs), so the first real
+Speak still cold-started the **capture path** (parec connect, the null-sink monitor, winepulse playback,
+the trim). That cold path lost the opening words once.
+
+Fix: the server now runs a full-pipeline `warmUp()` at startup (`src/server.ts`) — one real synthesis over
+the **exact production path** (parec + null-sink monitor + winepulse + trim + engine) — so the first real
+Speak is warm end-to-end. It runs in the background after `listen()` so `/health` is up immediately; the
+container logs `[warmup] priming…` then `[warmup] done in Nms`. The entrypoint's old bridge-only warmup is
+**removed** (superseded — it left the capture path cold). `warmUp` is best-effort: a failure only means the
+first Speak runs colder, never a crash.
+
 ## WIN 2 — locate + close the gap
 The gap is wall-time inside the child's lifetime but **outside** `main()`'s self-measured window: Wine
 process **load** (spawn→main) and **teardown** (after the timing print → exit: COM/DLL unload, device
@@ -76,6 +89,16 @@ close/drain).
   `fflush(NULL); _exit(rc)`, skipping `CoUninitialize` + DLL unload + device close/drain (safe for a
   one-shot process; the OS/Wine reclaims everything). Teardown sits *after* the timing print, so this is
   the most likely home of the gap. Single-pass also removes one MMAudioDest open/close cycle.
+
+  **Fix: teardown eliminated (SIGKILL on `[timing]`).** Operator measurement showed teardown ≈2000ms
+  even with `_Exit` — the bridge's fast exit does **not** skip Wine's process teardown, because that work
+  (audio device/DLL unload) is **kernel-/Wine-side and runs after the `[timing]` print**, outside the
+  bridge's control. By the time the bridge has printed `[timing]`, the useful work is already done: the
+  timeline file is written + closed and all audio has played to the null sink. So the server now
+  **SIGKILLs the bridge the moment it sees `[timing]` on stderr** (`src/server.ts`), skipping that ~2s of
+  dead teardown. The close handler treats this deliberate kill as **success** (the kill exits by signal,
+  i.e. non-zero, but `killedAfterDone` is set); a real failure **before** `[timing]` still 500s. Net:
+  teardown → ~0, total → ~4000ms.
 - **Residual** — if a large `wineLoadMs` remains (the spawn→main prologue), the only further fix is a
   **persistent-engine bridge daemon** — a large rewrite, **out of scope here**, reported with its number.
 
@@ -91,23 +114,27 @@ No Wine/PulseAudio in the dev sandbox, so these come from the user's `docker run
 |--------|-----------------|--------------------|-------|
 | Pass A total | ~2912ms | _tbd_ | the inherent real-time floor (unchanged) |
 | Pass B total | ~2853ms | **removed** | killed by single-pass capture |
-| gap (load/teardown) | ~2170ms | _tbd_ | `_exit` closes teardown; `wineLoadMs` is the residual |
+| gap (load/teardown) | ~2170ms | _tbd_ | teardown was ~2000ms even with `_Exit` (it's kernel-/Wine-side, after `[timing]`); now skipped by SIGKILL-on-`[timing]` → teardown ~0. `wineLoadMs` is the residual |
 | capture-start clip | first ~2–3s lost; varying WAV sizes | **fixed** | gate on first captured sample before synthesis; sizes consistent |
-| **`[tts-timing]` total** | **~7960ms** | _tbd_ | target: toward Pass A floor + small overhead |
+| first-Speak cold clip | opening clipped once after container start | **fixed** | full-pipeline `warmUp()` at startup (entrypoint bridge-only warmup removed) |
+| **`[tts-timing]` total** | **~7960ms** | _tbd_ | target ~4000ms (Pass A floor + small overhead; teardown skipped) |
 
 `[tts-timing]` now reports `captureReady=` — the readiness gate paid before synthesis starts.
+Background measurement that prompted these fixes:
+`total=6011ms (captureReady=747 bridgeWall=5055 wineLoad=163 teardown=2000 capture=6004 encode=0) bridge[init=8 passA=2873 write=0 self=2892]` — teardown=2000ms is the dead time now skipped by SIGKILL-on-`[timing]`.
 
 ## What is verified where
 - **CI (this repo, no Wine/PA):** `wrapPcmToWav` + `trimLeadingSilence` unit tests; a server test with an
   injected `captureCommand` (fake-capture emits leading-silence + tone PCM) + timeline-only fake-bridge →
   valid RIFF/WAVE response built from the capture, aligned timeline, and the empty-capture → 500 path.
   `pnpm -r typecheck && pnpm -r test && pnpm lint && pnpm format` green.
-- **Operator (rebuild + curl/Speak):** `[tts-timing] total` drops substantially toward the ~2900ms floor;
-  the WAV is valid RIFF/WAVE and plays; the **full phrase is audible from the first word** (no clipped
-  opening); **WAV sizes are consistent across requests** for the same phrase; `captureReady=` appears in
-  `[tts-timing]`; lip-sync stays dense + aligned in MASH. If capture yields no/garbled audio, the opening is
-  clipped, sizes vary, or lip-sync drifts → STOP + report (don't paper over it). Numbers fill the table
-  above.
+- **Operator (rebuild + curl/Speak):** `[tts-timing] total` drops toward ~4000ms (Pass A floor + small
+  overhead, teardown skipped); `teardown` reads ~0; the **FIRST Speak's opening is audible** (after the
+  container logs `[warmup] done`); the WAV is valid RIFF/WAVE and plays; the **full phrase is audible from
+  the first word** (no clipped opening); **WAV sizes are consistent across requests** for the same phrase;
+  `captureReady=` appears in `[tts-timing]`; lip-sync stays dense + aligned in MASH. If capture yields
+  no/garbled audio, the opening is clipped (first or subsequent Speak), sizes vary, teardown stays ~2s, or
+  lip-sync drifts → STOP + report (don't paper over it). Numbers fill the table above.
 
 ## Non-goals / known limitations
 Persistent-engine bridge daemon (report the residual `wineLoadMs`, defer). Forced parallel passes (moot

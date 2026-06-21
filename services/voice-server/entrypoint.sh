@@ -51,23 +51,16 @@ else
   echo "WARN: Xvfb $DISPLAY did not come up — bridge synthesis will fail until it does." >&2
 fi
 
-# --- warm the Wine prefix + engine (Cycle 10) -------------------------------
+# --- warm the Wine prefix (Cycle 10) ----------------------------------------
 # wineboot once, then keep wineserver PERSISTENT (-p) so it doesn't tear down between
 # requests (which would re-pay prefix init on the next `wine`). Best-effort: a failure here
 # only means requests run cold, not that the container dies.
 wineboot --init >/dev/null 2>&1 || echo "WARN: wineboot --init failed (requests will run colder)." >&2
 wineserver -p >/dev/null 2>&1 || echo "WARN: 'wineserver -p' (persist) failed." >&2
 
-# Warmup synth: speak a tiny phrase so the TruVoice DLLs + COM registration are paged in and
-# the OS file cache is warm. Output is discarded; non-fatal. Its [timing] line shows the
-# first-pass cost so the cold-vs-warm delta is visible in the logs.
-BRIDGE_EXE="/opt/vivify/bridge/sapi4-mouth.exe"
-if [ -f "$BRIDGE_EXE" ]; then
-  printf 'warm' >/tmp/warm.txt
-  echo "warmup: priming the SAPI4 engine…"
-  wine "$BRIDGE_EXE" --text-file /tmp/warm.txt --wav /tmp/warm.wav --timeline /tmp/warm.json \
-    || echo "WARN: warmup synth failed (first real Speak will be colder)." >&2
-  rm -f /tmp/warm.txt /tmp/warm.wav /tmp/warm.json
-fi
+# NOTE: the engine + CAPTURE pipeline (parec + null-sink monitor + winepulse) are warmed by the
+# SERVER at startup via one real synthesis (see `warmUp` in src/server.ts) — that primes the whole
+# /tts path, not just the engine, so the FIRST real Speak isn't cold. A bridge-only warmup here
+# (Cycle 10) left the capture path cold and clipped the first Speak's opening; it's removed.
 
 exec "$@"
