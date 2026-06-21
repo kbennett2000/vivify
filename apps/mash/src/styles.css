@@ -46,6 +46,16 @@ body {
   flex-wrap: wrap;
   padding: 10px;
 }
+.voicebar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 0 10px 10px;
+}
+.voicebar input {
+  min-width: 18rem;
+}
 .toolbar .sep {
   color: var(--shadow);
 }

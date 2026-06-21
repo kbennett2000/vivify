@@ -24,6 +24,10 @@ services/voice-server/bridge/*.o
 **/fixtures/**/*.bmp
 **/fixtures/**/*.wav
 **/fixtures/raw/
+# Synthesized voice output / local test artifacts (e.g. the Cycle 5/6 GO-run WAV +
+# curl response) — never commit audio (it's L&H TruVoice output) or scratch output.
+*.wav
+/result.json
 
 # --- Standard ---
 node_modules/

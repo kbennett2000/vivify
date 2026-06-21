@@ -13,6 +13,7 @@ export default defineConfig({
       '@vivify/core': src('../../packages/core/src/index.ts'),
       '@vivify/acs': src('../../packages/acs/src/index.ts'),
       '@vivify/types': src('../../packages/types/src/index.ts'),
+      '@vivify/voice-truvoice': src('../../packages/voice-truvoice/src/index.ts'),
     },
   },
 });

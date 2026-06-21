@@ -201,3 +201,32 @@ describe('voice-server bridge timeout', () => {
     expect(((await res.json()) as { error: string }).error).toContain('timed out');
   });
 });
+
+describe('voice-server CORS (browser access)', () => {
+  let server: Server;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    server = createVoiceServer({ bridgeCommand: `node ${fakeBridgePath}` });
+    const port = await listenOnEphemeralPort(server);
+    baseUrl = `http://127.0.0.1:${port}`;
+  });
+
+  afterAll(async () => {
+    await closeServer(server);
+  });
+
+  it('OPTIONS preflight → 204 with permissive CORS headers', async () => {
+    const res = await fetch(`${baseUrl}/tts`, { method: 'OPTIONS' });
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-origin')).toBe('*');
+    expect(res.headers.get('access-control-allow-methods')).toContain('POST');
+    expect(res.headers.get('access-control-allow-headers')).toContain('content-type');
+  });
+
+  it('responses carry the CORS origin header', async () => {
+    const res = await fetch(`${baseUrl}/health`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('access-control-allow-origin')).toBe('*');
+  });
+});

@@ -12,7 +12,7 @@ export const name = '@vivify/core';
 export type { Agent, AgentEvent, SpeakOptions, MoveOptions, CharacterBundleRef } from './types.js';
 
 export { StubTtsProvider } from './provider.js';
-export { createAgent } from './agent.js';
+export { createAgent, createAgentFromModel } from './agent.js';
 export type { CreateAgentOptions } from './agent.js';
 
 // Engine building blocks (pure; useful for advanced consumers and tested directly).
@@ -25,6 +25,9 @@ export { animationForState, directionTo, moveState, gestureState } from './state
 export type { Direction } from './states.js';
 export { realClock } from './clock.js';
 export type { Clock } from './clock.js';
+export { WebAudioSink } from './audio.js';
+export type { AudioSink, AudioHandle } from './audio.js';
+export { activeMouthEvent, chooseOverlay, SHAPE_MAX } from './lipsync.js';
 
 // Shared contracts re-exported for convenience; canonical home is @vivify/types.
 export type {
@@ -37,6 +40,7 @@ export type {
   FrameImage,
   FrameBranch,
   MouthOverlay,
+  FrameMouthOverlay,
   SoundModel,
   BalloonConfig,
   VoiceConfig,

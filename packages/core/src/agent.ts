@@ -4,15 +4,23 @@
 // mounts a host element it owns. Browser-only (harness-validated); the pure
 // logic it composes (playback/queue/wrap/states) is unit-tested separately.
 
-import type { AnimationModel, CharacterModel, TtsProvider } from '@vivify/types';
+import type {
+  AnimationModel,
+  CharacterModel,
+  FrameMouthOverlay,
+  TtsProvider,
+  TtsResult,
+} from '@vivify/types';
 import type { Agent, AgentEvent, CharacterBundleRef, MoveOptions, SpeakOptions } from './types.js';
 import { ActionQueue } from './queue.js';
-import { Playback, type Rng } from './playback.js';
+import { Playback, playableLength, type Rng } from './playback.js';
 import { realClock, type Clock } from './clock.js';
 import { Compositor } from './compositor.js';
 import { Balloon } from './balloon.js';
 import { animationForState, directionTo, gestureState, moveState } from './states.js';
 import { StubTtsProvider } from './provider.js';
+import { WebAudioSink, type AudioSink, type AudioHandle } from './audio.js';
+import { activeMouthEvent, chooseOverlay } from './lipsync.js';
 import { loadCharacter } from './loader.js';
 
 export interface CreateAgentOptions {
@@ -22,12 +30,15 @@ export interface CreateAgentOptions {
   provider?: TtsProvider;
   /** RNG for branch/state selection (default Math.random). */
   rng?: Rng;
+  /** Audio playback sink (default Web Audio; tests inject a fake). */
+  audio?: AudioSink;
 }
 
 const SPEAK_MIN_MS = 800;
 const SPEAK_PER_CHAR_MS = 55;
 const SPEAK_MAX_MS = 10000;
 const DEFAULT_MOVE_SPEED = 120; // px/s
+const LIPSYNC_TICK_MS = 50; // overlay/word-reveal update cadence during audio speech
 
 class VivifyAgent implements Agent {
   private readonly host: HTMLElement;
@@ -37,6 +48,7 @@ class VivifyAgent implements Agent {
   private readonly clock: Clock;
   private readonly rng: Rng;
   private readonly provider: TtsProvider;
+  private readonly audio: AudioSink;
   private readonly animMap = new Map<string, AnimationModel>();
   private readonly listeners = new Map<AgentEvent, Set<(...a: unknown[]) => void>>();
 
@@ -53,6 +65,7 @@ class VivifyAgent implements Agent {
     this.clock = opts.clock ?? realClock;
     this.rng = opts.rng ?? Math.random;
     this.provider = opts.provider ?? new StubTtsProvider();
+    this.audio = opts.audio ?? new WebAudioSink();
     for (const anim of model.animations) this.animMap.set(anim.name, anim);
 
     const doc = mount?.ownerDocument ?? document;
@@ -108,10 +121,25 @@ class VivifyAgent implements Agent {
     return this.queue.enqueue(async (signal) => {
       this.balloon.setText(text);
       this.balloon.show();
-      // Silent: the stub provider yields no audio/timeline; ignore failures.
-      await provider.speak(text, this.model.voice).catch(() => undefined);
-      const ms = Math.min(SPEAK_MAX_MS, SPEAK_MIN_MS + text.length * SPEAK_PER_CHAR_MS);
-      await this.speakAnimate(ms, signal);
+      // Ask the provider to synthesize (cancellable). A failure/abort/no-backend
+      // falls back to the silent heuristic path below.
+      let result: TtsResult | null = null;
+      try {
+        result = await provider.speak(text, this.model.voice, signal);
+      } catch {
+        result = null;
+      }
+      if (signal.aborted) {
+        this.balloon.hide();
+        return;
+      }
+      if (result && result.audio.byteLength > 0) {
+        await this.speakWithAudio(result, signal);
+      } else {
+        // Silent (stub / Web Speech / failed fetch): heuristic-timed Speaking loop.
+        const ms = Math.min(SPEAK_MAX_MS, SPEAK_MIN_MS + text.length * SPEAK_PER_CHAR_MS);
+        await this.speakAnimate(ms, signal);
+      }
       if (!opts?.hold) this.balloon.hide();
     });
   }
@@ -257,6 +285,94 @@ class VivifyAgent implements Agent {
     });
   }
 
+  /**
+   * Audio-driven speech: play the WAV, loop the Speaking animation, and — synced
+   * to audio playback time — composite the viseme mouth overlay (from the active
+   * Speaking frame's overlays) + reveal balloon words. Resolves when audio ends
+   * or the action aborts (which stops audio, animation, and the ticker at once).
+   */
+  private async speakWithAudio(result: TtsResult, signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return;
+
+    // Loop the Speaking animation while audio plays; track the active frame's
+    // mouth overlays so the lip-sync ticker can choose among them.
+    let overlays: FrameMouthOverlay[] = [];
+    let looping = true;
+    // Holder so the closures below can share the latest Playback (TS can't narrow
+    // a `let` reassigned only inside a closure).
+    const lp: { pb: Playback | null } = { pb: null };
+    const speakingName = animationForState(this.model.states, 'Speaking', this.rng);
+    const speakingAnim = speakingName ? this.animMap.get(speakingName) : undefined;
+    // Only loop a multi-frame animation. A single static pose (<=1 playable frame)
+    // plays once and holds — the mouth overlay carries the motion. Restarting such
+    // an animation from onEnd would recurse synchronously (start→finish→onEnd→…)
+    // without ever yielding to the clock, so guard against it.
+    const canLoop = speakingAnim ? playableLength(speakingAnim.frames) > 1 : false;
+    const startLoop = (): void => {
+      if (!speakingAnim) return;
+      const pb = new Playback(speakingAnim, {
+        clock: this.clock,
+        rng: this.rng,
+        onFrame: (_i, frame) => {
+          overlays = frame.mouth?.overlays ?? [];
+          this.compositor.renderFrame(frame);
+        },
+        onEnd: () => {
+          if (looping && !signal.aborted && canLoop) startLoop();
+        },
+      });
+      this.current = pb;
+      lp.pb = pb;
+      pb.start();
+    };
+    startLoop();
+
+    let handle: AudioHandle | null = null;
+    try {
+      handle = await this.audio.play(result.audio);
+    } catch {
+      handle = null;
+    }
+    if (!handle || signal.aborted) {
+      looping = false;
+      lp.pb?.cancel();
+      if (this.current === lp.pb) this.current = null;
+      handle?.stop();
+      return;
+    }
+
+    const audioHandle = handle;
+    const duration = audioHandle.durationMs();
+    await new Promise<void>((resolve) => {
+      let timer: number | null = null;
+      let settled = false;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', onAbort);
+        if (timer !== null) this.clock.clearTimeout(timer);
+        looping = false;
+        audioHandle.stop();
+        lp.pb?.cancel();
+        if (this.current === lp.pb) this.current = null;
+        this.compositor.setMouthOverlay(null);
+        resolve();
+      };
+      const onAbort = (): void => finish();
+      signal.addEventListener('abort', onAbort);
+      void audioHandle.ended.then(finish);
+      const tick = (): void => {
+        if (settled) return;
+        const t = audioHandle.currentTimeMs();
+        const ev = activeMouthEvent(result.mouthTimeline, t);
+        this.compositor.setMouthOverlay(ev ? chooseOverlay(ev.shape, overlays) : null);
+        if (duration > 0) this.balloon.revealFraction(t / duration);
+        timer = this.clock.setTimeout(tick, LIPSYNC_TICK_MS);
+      };
+      tick();
+    });
+  }
+
   private tween(toX: number, toY: number, durationMs: number, signal: AbortSignal): Promise<void> {
     const fromX = this.posX;
     const fromY = this.posY;
@@ -305,5 +421,18 @@ export async function createAgent(
   opts?: CreateAgentOptions,
 ): Promise<Agent> {
   const model = await loadCharacter(source);
+  return createAgentFromModel(model, mount, opts);
+}
+
+/**
+ * Build an agent from an already-decoded `CharacterModel` (e.g. one produced by
+ * `@vivify/acs` directly), skipping the loader. `createAgent` calls this after
+ * loading for you.
+ */
+export function createAgentFromModel(
+  model: CharacterModel,
+  mount?: HTMLElement,
+  opts?: CreateAgentOptions,
+): Agent {
   return new VivifyAgent(model, mount, opts);
 }

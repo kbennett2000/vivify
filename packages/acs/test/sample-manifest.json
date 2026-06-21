@@ -37,7 +37,20 @@
           "durationMs": 80,
           "branches": [],
           "exitFrame": 0,
-          "mouth": { "raw": { "shape": 3 } }
+          "mouth": {
+            "overlays": [
+              {
+                "type": 3,
+                "replaceFlag": true,
+                "imageIndex": 0,
+                "x": 10,
+                "y": 4,
+                "rgnFlag": 0,
+                "scaleX": 0,
+                "scaleY": 0
+              }
+            ]
+          }
         }
       ]
     },

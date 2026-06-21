@@ -16,6 +16,7 @@ import type {
   FrameBranch,
   FrameImage,
   FrameModel,
+  FrameMouthOverlay,
   MouthOverlay,
   VoiceConfig,
 } from '@vivify/types';
@@ -28,8 +29,19 @@ const Channel = Int.min(0).max(255);
 /** RGB triple, each channel 0–255. */
 const RgbSchema = z.tuple([Channel, Channel, Channel]);
 
+const FrameMouthOverlaySchema = z.object({
+  type: Int,
+  replaceFlag: z.boolean(),
+  imageIndex: Int.min(0),
+  x: Int,
+  y: Int,
+  rgnFlag: Int,
+  scaleX: Int,
+  scaleY: Int,
+});
+
 const MouthOverlaySchema = z.object({
-  raw: z.record(z.string(), z.unknown()).optional(),
+  overlays: z.array(FrameMouthOverlaySchema),
 });
 
 const FrameImageSchema = z.object({
@@ -165,5 +177,8 @@ type _FrameInSync = Assert<InSync<z.infer<typeof FrameSchema>, FrameModel>>;
 type _FrameImageInSync = Assert<InSync<z.infer<typeof FrameImageSchema>, FrameImage>>;
 type _FrameBranchInSync = Assert<InSync<z.infer<typeof FrameBranchSchema>, FrameBranch>>;
 type _MouthInSync = Assert<InSync<z.infer<typeof MouthOverlaySchema>, MouthOverlay>>;
+type _FrameMouthOverlayInSync = Assert<
+  InSync<z.infer<typeof FrameMouthOverlaySchema>, FrameMouthOverlay>
+>;
 type _BalloonInSync = Assert<InSync<z.infer<typeof BalloonSchema>, BalloonConfig>>;
 type _VoiceInSync = Assert<InSync<z.infer<typeof VoiceSchema>, VoiceConfig>>;

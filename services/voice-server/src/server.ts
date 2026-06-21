@@ -32,9 +32,17 @@ const DEFAULT_BRIDGE =
 const DEFAULT_MAX_BODY = 1_000_000;
 const DEFAULT_BRIDGE_TIMEOUT = Number(process.env.VIVIFY_SAPI4_TIMEOUT_MS ?? 120_000);
 
+// Permissive CORS so a browser app (e.g. mash on another origin) can call the
+// service. The service exposes no secrets and is a local dev/voice backend.
+const CORS_HEADERS = {
+  'access-control-allow-origin': '*',
+  'access-control-allow-methods': 'GET, POST, OPTIONS',
+  'access-control-allow-headers': 'content-type',
+} as const;
+
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body);
-  res.writeHead(status, { 'content-type': 'application/json' });
+  res.writeHead(status, { 'content-type': 'application/json', ...CORS_HEADERS });
   res.end(payload);
 }
 
@@ -124,6 +132,11 @@ export function createVoiceServer(opts: ServerOptions = {}): Server {
   return createServer((req, res) => {
     void (async () => {
       try {
+        if (req.method === 'OPTIONS') {
+          res.writeHead(204, CORS_HEADERS);
+          res.end();
+          return;
+        }
         if (req.method === 'GET' && req.url === '/health') {
           sendJson(res, 200, { ok: true });
           return;

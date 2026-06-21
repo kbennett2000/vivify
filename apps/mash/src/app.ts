@@ -2,7 +2,8 @@
 // the Agent control). No @vivify/acs, no engine internals. DOM glue; the engine's
 // own logic is covered by @vivify/core's tests, the pure helpers here by characters.test.ts.
 
-import { createAgent, type Agent } from '@vivify/core';
+import { createAgent, type Agent, type SpeakOptions } from '@vivify/core';
+import { TruVoiceProvider } from '@vivify/voice-truvoice';
 import {
   builtinManifestUrl,
   isAcsFile,
@@ -23,6 +24,7 @@ export function initApp(): void {
   const dropZone = el<HTMLDivElement>('drop');
   const animList = el<HTMLDivElement>('animations');
   const speakInput = el<HTMLInputElement>('speak');
+  const voiceUrlInput = el<HTMLInputElement>('voiceUrl');
   const status = el<HTMLDivElement>('status');
 
   let agent: Agent | null = null;
@@ -132,7 +134,13 @@ export function initApp(): void {
   // --- controls ---
   el<HTMLButtonElement>('speakBtn').addEventListener('click', () => {
     if (!agent) return;
-    void agent.speak(speakInput.value.trim() || 'Hello! I am alive in your browser.');
+    // A voice-server URL routes speech through TruVoice (authentic audio + lip-sync);
+    // blank stays silent (StubTtsProvider). Read live so the field is editable anytime.
+    const url = voiceUrlInput.value.trim();
+    const opts: SpeakOptions | undefined = url
+      ? { provider: new TruVoiceProvider({ url }) }
+      : undefined;
+    void agent.speak(speakInput.value.trim() || 'Hello! I am alive in your browser.', opts);
   });
   el<HTMLButtonElement>('stopBtn').addEventListener('click', () => agent?.stop());
   el<HTMLButtonElement>('hideBtn').addEventListener('click', () => void agent?.hide());
