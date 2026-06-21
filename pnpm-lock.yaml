@@ -61,6 +61,9 @@ importers:
 
   packages/core:
     dependencies:
+      '@vivify/acs':
+        specifier: workspace:*
+        version: link:../acs
       '@vivify/types':
         specifier: workspace:*
         version: link:../types
