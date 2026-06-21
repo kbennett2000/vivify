@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import type { Server } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createVoiceServer } from '../src/server.js';
+import type { TtsTiming } from '../src/timing.js';
 
 const fakeBridgePath = fileURLToPath(new URL('./fake-bridge.mjs', import.meta.url));
 const failBridgePath = fileURLToPath(new URL('./fail-bridge.mjs', import.meta.url));
@@ -147,6 +148,52 @@ describe('voice-server HTTP layer (fake bridge)', () => {
   it('GET /tts (wrong method) → 404', async () => {
     const res = await fetch(`${baseUrl}/tts`);
     expect(res.status).toBe(404);
+  });
+});
+
+describe('voice-server latency instrumentation (Cycle 10, fake bridge)', () => {
+  let server: Server;
+  let baseUrl: string;
+  let captured: TtsTiming | undefined;
+
+  beforeAll(async () => {
+    server = createVoiceServer({
+      bridgeCommand: `node ${fakeBridgePath}`,
+      onTiming: (t) => {
+        captured = t;
+      },
+    });
+    const port = await listenOnEphemeralPort(server);
+    baseUrl = `http://127.0.0.1:${port}`;
+  });
+
+  afterAll(async () => {
+    await closeServer(server);
+  });
+
+  it('onTiming receives the parsed bridge stages + server stages for a /tts request', async () => {
+    const res = await fetch(`${baseUrl}/tts`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'measure me' }),
+    });
+    expect(res.status).toBe(200);
+
+    // The callback fired with the request's timing.
+    expect(captured).toBeDefined();
+    const t = captured as TtsTiming;
+
+    // Bridge stages came from the fake bridge's `[timing]` stderr line, parsed by
+    // the server (NOT injected by this test) — assert the values from that line.
+    expect(t.bridge).not.toBeNull();
+    expect(t.bridge?.passATotalMs).toBe(300);
+    expect(t.bridge?.totalMs).toBe(400);
+
+    // Server-observed stages are real measurements: present and non-negative.
+    for (const v of [t.bridgeMs, t.readMs, t.encodeMs, t.totalMs]) {
+      expect(typeof v).toBe('number');
+      expect(v).toBeGreaterThanOrEqual(0);
+    }
   });
 });
 

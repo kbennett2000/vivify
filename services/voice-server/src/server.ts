@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import type { VoiceConfig } from '@vivify/types';
 import { voiceToBridgeArgs } from './voice-args.js';
 import { parseTimeline } from './timeline.js';
+import { parseBridgeTiming, formatTtsTiming, type TtsTiming } from './timing.js';
 
 export interface SynthRequest {
   text: string;
@@ -25,10 +26,15 @@ export interface ServerOptions {
   maxBodyBytes?: number;
   /** Kill the bridge + fail the request if it runs longer than this (ms). */
   bridgeTimeoutMs?: number;
+  /** Cycle 10: per-request latency breakdown hook (also logged). Injectable for tests. */
+  onTiming?: (timing: TtsTiming) => void;
 }
 
-const DEFAULT_BRIDGE =
-  process.env.VIVIFY_SAPI4_BRIDGE ?? 'xvfb-run -a wine /opt/vivify/bridge/sapi4-mouth.exe';
+// Cycle 10: the engine is now WARMED at container start (persistent Xvfb + wineserver via
+// entrypoint.sh), so the per-request command is a plain `wine …` — no `xvfb-run -a`, which
+// spawned a fresh Xvfb and paid wineserver/wineboot cold-start on every /tts. Overridable
+// via VIVIFY_SAPI4_BRIDGE.
+const DEFAULT_BRIDGE = process.env.VIVIFY_SAPI4_BRIDGE ?? 'wine /opt/vivify/bridge/sapi4-mouth.exe';
 const DEFAULT_MAX_BODY = 1_000_000;
 const DEFAULT_BRIDGE_TIMEOUT = Number(process.env.VIVIFY_SAPI4_TIMEOUT_MS ?? 120_000);
 
@@ -63,12 +69,23 @@ function sendJson(
   res.end(payload);
 }
 
+interface BridgeResult {
+  wav: Buffer;
+  timeline: unknown;
+  /** Captured bridge stderr (carries the `[timing]` + `[label]` diagnostic lines). */
+  stderr: string;
+  /** Server-observed child wall time (spawn → close), ms. */
+  bridgeMs: number;
+  /** Time spent reading the WAV + timeline files, ms. */
+  readMs: number;
+}
+
 async function runBridge(
   bridgeCommand: string,
   text: string,
   voice: VoiceConfig,
   timeoutMs: number,
-): Promise<{ wav: Buffer; timeline: unknown }> {
+): Promise<BridgeResult> {
   const dir = await mkdtemp(join(tmpdir(), 'vivify-tts-'));
   try {
     const textPath = join(dir, 'in.txt');
@@ -90,7 +107,8 @@ async function runBridge(
       ...voiceToBridgeArgs(voice),
     ];
 
-    await new Promise<void>((resolve, reject) => {
+    const tSpawn = Date.now();
+    const stderr = await new Promise<string>((resolve, reject) => {
       const child = spawn(program, args, { stdio: ['ignore', 'ignore', 'pipe'] });
       let stderr = '';
       let settled = false;
@@ -112,21 +130,24 @@ async function runBridge(
       child.on('close', (code) => {
         if (code === 0) {
           // Surface the bridge's own diagnostics (event count, timeMs span, raw qTimeStamp
-          // range, AudioStart) in the server log on success too — otherwise they're only
-          // visible on failure, and the lip-sync timing evidence would be invisible.
+          // range, AudioStart, and the [timing] breakdown) in the server log on success too —
+          // otherwise they're only visible on failure, and the timing evidence would be hidden.
           const diag = stderr.trim();
           if (diag) console.log(`[bridge] ${diag}`);
-          finish(resolve);
+          finish(() => resolve(stderr));
         } else
           finish(() =>
             reject(new Error(`bridge exited with code ${code}: ${stderr.slice(0, 500)}`)),
           );
       });
     });
+    const bridgeMs = Date.now() - tSpawn;
 
+    const tRead = Date.now();
     const wav = await readFile(wavPath);
     const timeline: unknown = JSON.parse(await readFile(timelinePath, 'utf8'));
-    return { wav, timeline };
+    const readMs = Date.now() - tRead;
+    return { wav, timeline, stderr, bridgeMs, readMs };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -166,6 +187,7 @@ export function createVoiceServer(opts: ServerOptions = {}): Server {
           return;
         }
         if (req.method === 'POST' && req.url === '/tts') {
+          const tReq = Date.now();
           const body = await readBody(req, maxBodyBytes);
           let parsed: SynthRequest;
           try {
@@ -178,25 +200,37 @@ export function createVoiceServer(opts: ServerOptions = {}): Server {
             sendJson(res, 400, { error: 'field "text" (non-empty string) is required' }, cors);
             return;
           }
-          const { wav, timeline } = await runBridge(
+          const { wav, timeline, stderr, bridgeMs, readMs } = await runBridge(
             bridgeCommand,
             parsed.text,
             parsed.voice ?? {},
             bridgeTimeoutMs,
           );
           const mouthTimeline = parseTimeline(timeline);
-          // Per-utterance density log: a too-sparse timeline means a static mouth.
-          // ~9 events for a multi-second utterance ⇒ the file-audio output mode is
-          // coarsening the engine's Visual notifications (ADR-0017 / Cycle 7).
-          // TODO(cycle-7): remove once real-time-audio density is verified.
+          const tEncode = Date.now();
+          const audioWavBase64 = wav.toString('base64');
+          const encodeMs = Date.now() - tEncode;
+
+          // Cycle 10: per-request latency breakdown — server stages + the parsed bridge
+          // stages — so we can SEE where the ~2-3s goes (engine init / Pass A real-time
+          // floor / Pass B overhead / server). See timing.ts and the cycle-10 doc.
+          const timing: TtsTiming = {
+            bridgeMs,
+            readMs,
+            encodeMs,
+            totalMs: Date.now() - tReq,
+            bridge: parseBridgeTiming(stderr),
+          };
           console.log(
-            `[tts] ${mouthTimeline.length} mouth events, ${wav.length} bytes wav for ${parsed.text.length} chars`,
+            `[tts-timing] ${mouthTimeline.length} events, ${wav.length}B wav | ${formatTtsTiming(timing)}`,
           );
+          opts.onTiming?.(timing);
+
           sendJson(
             res,
             200,
             {
-              audioWavBase64: wav.toString('base64'),
+              audioWavBase64,
               mouthTimeline,
               format: 'wav',
             },

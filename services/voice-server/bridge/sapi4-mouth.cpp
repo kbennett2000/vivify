@@ -190,7 +190,13 @@ static std::string readFile(const char* path) {
 // (S_OK on success). The sink is intentionally not freed (one-shot process).
 
 static HRESULT synthesize(const GUID& modeGuid, IUnknown* pAudio, const std::string& text, long speed,
-                          long pitch, std::vector<MouthEvent>& events, const char* label) {
+                          long pitch, std::vector<MouthEvent>& events, const char* label,
+                          DWORD* outTtfbMs = nullptr, DWORD* outTotalMs = nullptr) {
+  // Cycle 10 timing: wall-clock at pass entry. TTFB = AudioStart (first audio) relative to
+  // here; total = whole pass. Declared before any `goto done` so it can't be jumped over.
+  const DWORD tPassStart = GetTickCount();
+  if (outTtfbMs) *outTtfbMs = 0;
+  if (outTotalMs) *outTotalMs = 0;
   ITTSEnum* pEnum = nullptr;
   ITTSCentral* pCentral = nullptr;
   CMouthSink* sink = nullptr;
@@ -252,6 +258,10 @@ static HRESULT synthesize(const GUID& modeGuid, IUnknown* pAudio, const std::str
             "[%s] events=%zu timeMs=[%llu..%llu]ms rawQ=[%llu..%llu] audioStart=%s\n", label,
             events.size(), firstT, lastT, sink->rawQMin, sink->rawQMax,
             sink->audioStartFired ? "yes" : "no");
+    // Pass timing (Cycle 10): TTFB = AudioStart tick − pass start; total = now − pass start.
+    const DWORD tNow = GetTickCount();
+    if (outTotalMs) *outTotalMs = tNow - tPassStart;
+    if (outTtfbMs && sink->started && sink->baseMs >= tPassStart) *outTtfbMs = sink->baseMs - tPassStart;
   }
 done:
   if (pCentral && sinkKey) pCentral->UnRegister(sinkKey);
@@ -263,6 +273,7 @@ done:
 // ---- main ------------------------------------------------------------------
 
 int main(int argc, char** argv) {
+  const DWORD tProcStart = GetTickCount(); // Cycle 10: total-latency zero point
   Args a;
   if (!parseArgs(argc, argv, a)) {
     fprintf(stderr, "usage: sapi4-mouth --text-file <in> --wav <out.wav> --timeline <out.json>"
@@ -312,6 +323,11 @@ int main(int argc, char** argv) {
 
   std::vector<MouthEvent> events;
 
+  // Engine init (Cycle 10): everything up to here — CoInitialize + voice-mode resolve — is
+  // the per-request engine-init cost (the warm-engine cycle target; see cycle-10 doc).
+  const DWORD initMs = GetTickCount() - tProcStart;
+  DWORD passAttfbMs = 0, passAtotalMs = 0, passBttfbMs = 0, passBtotalMs = 0;
+
   // Pass A — DENSE events via real-time multimedia audio (CLSID_MMAudioDest). This is
   // the whole point of Cycle 7. MMAudioDest opens a waveOut device inside Select(); if
   // the container has no (dummy) audio device, Select fails here — report, don't fake.
@@ -326,7 +342,8 @@ int main(int argc, char** argv) {
       CoUninitialize();
       return 6;
     }
-    hr = synthesize(modeGuid, pMM, text, a.speed, a.pitch, events, "mmaudio");
+    hr = synthesize(modeGuid, pMM, text, a.speed, a.pitch, events, "mmaudio", &passAttfbMs,
+                    &passAtotalMs);
     pMM->Release();
     if (FAILED(hr)) {
       fprintf(stderr,
@@ -359,7 +376,7 @@ int main(int argc, char** argv) {
     }
     std::vector<MouthEvent> wavEvents; // discarded (file-mode events are sparse)
     hr = synthesize(modeGuid, static_cast<IUnknown*>(pFile), text, a.speed, a.pitch, wavEvents,
-                    "file-wav");
+                    "file-wav", &passBttfbMs, &passBtotalMs);
     pFile->Flush();
     pFile->Release();
     if (FAILED(hr)) {
@@ -373,6 +390,7 @@ int main(int argc, char** argv) {
   int rc = 0;
   const unsigned long long firstT = events.empty() ? 0 : events.front().timeMs;
   const unsigned long long lastT = events.empty() ? 0 : events.back().timeMs;
+  const DWORD tWriteStart = GetTickCount();
   if (!writeTimeline(a.timelineFile, events)) {
     fprintf(stderr, "failed writing timeline %s\n", a.timelineFile);
     rc = 12;
@@ -380,6 +398,16 @@ int main(int argc, char** argv) {
     fprintf(stderr, "ok: %zu mouth events, timeMs span=[%llu..%llu]ms\n", events.size(), firstT,
             lastT);
   }
+  const DWORD writeMs = GetTickCount() - tWriteStart;
+
+  // Cycle 10: one machine-readable per-stage breakdown the server parses + logs (timing.ts).
+  // passA_total ≈ utterance length (the inherent real-time floor); passB_total is the serial
+  // overhead on top; init is the per-request engine COM init the warm-engine cycle targets.
+  const DWORD totalMs = GetTickCount() - tProcStart;
+  fprintf(stderr,
+          "[timing] initMs=%lu passA_ttfbMs=%lu passA_totalMs=%lu passB_ttfbMs=%lu "
+          "passB_totalMs=%lu writeMs=%lu totalMs=%lu\n",
+          initMs, passAttfbMs, passAtotalMs, passBttfbMs, passBtotalMs, writeMs, totalMs);
 
   CoUninitialize();
   return rc;

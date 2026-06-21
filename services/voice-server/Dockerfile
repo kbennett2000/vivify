@@ -131,9 +131,13 @@ COPY pulse-null.pa /etc/pulse/vivify-null.pa
 COPY entrypoint.sh /opt/vivify/entrypoint.sh
 RUN chmod +x /opt/vivify/entrypoint.sh
 
+# Cycle 10 (warm engine): DISPLAY points at the persistent Xvfb that entrypoint.sh starts,
+# and the per-request bridge is a plain `wine …` — no `xvfb-run -a`, which spawned a fresh
+# Xvfb + paid wineserver/wineboot cold-start on every /tts. See docs/cycles/cycle-10-latency.md.
 ENV PORT=8080 \
     PULSE_SERVER=unix:/tmp/pulse-socket \
-    VIVIFY_SAPI4_BRIDGE="xvfb-run -a wine /opt/vivify/bridge/sapi4-mouth.exe"
+    DISPLAY=:99 \
+    VIVIFY_SAPI4_BRIDGE="wine /opt/vivify/bridge/sapi4-mouth.exe"
 EXPOSE 8080
 ENTRYPOINT ["/opt/vivify/entrypoint.sh"]
 CMD ["node", "dist/main.js"]
