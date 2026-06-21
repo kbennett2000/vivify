@@ -308,6 +308,24 @@ class VivifyAgent implements Agent {
     // an animation from onEnd would recurse synchronously (start→finish→onEnd→…)
     // without ever yielding to the clock, so guard against it.
     const canLoop = speakingAnim ? playableLength(speakingAnim.frames) > 1 : false;
+
+    // TODO(cycle-6): remove once the mouth path is confirmed. Diagnostic for "mouth
+    // doesn't move" — one line isolating the broken link: timeline lost (events=0),
+    // no Speaking state (speaking=none), or frames carry no mouth overlays
+    // (overlaysPerFrame all 0). console.info so it shows at the browser's Info level.
+    {
+      const frames = speakingAnim?.frames ?? [];
+      const overlaysPerFrame = frames.map((f) => f.mouth?.overlays.length ?? 0);
+      const types = [
+        ...new Set(frames.flatMap((f) => (f.mouth?.overlays ?? []).map((o) => o.type))),
+      ];
+      console.info(
+        `[vivify:lipsync] entered: audioBytes=${result.audio.byteLength}, events=${result.mouthTimeline.length}, speaking=${speakingName ?? 'none'}, frames=${frames.length}, overlaysPerFrame=[${overlaysPerFrame.join(',')}], types=[${types.join(',')}], canLoop=${canLoop}`,
+      );
+    }
+    let lipsyncLogged = false;
+    let lastLoggedImageIndex: number | null = null;
+
     const startLoop = (): void => {
       if (!speakingAnim) return;
       const pb = new Playback(speakingAnim, {
@@ -366,7 +384,21 @@ class VivifyAgent implements Agent {
         // Interpolate the mouth shape between (sparse) timeline anchors so the mouth
         // MOVES instead of holding a pose for seconds (ADR-0017 / Cycle 6 interim).
         const shape = interpolatedShape(result.mouthTimeline, t);
-        this.compositor.setMouthOverlay(shape !== null ? chooseOverlay(shape, overlays) : null);
+        const chosen = shape !== null ? chooseOverlay(shape, overlays) : null;
+        this.compositor.setMouthOverlay(chosen);
+        // TODO(cycle-6): remove once the mouth path is confirmed. Log the first tick's
+        // decision + every overlay change, so a moving mouth is visible in the console
+        // and a static one is obviously static (with the reason for any null overlay).
+        if (!lipsyncLogged || (chosen?.imageIndex ?? null) !== lastLoggedImageIndex) {
+          lipsyncLogged = true;
+          lastLoggedImageIndex = chosen?.imageIndex ?? null;
+          const reason = chosen
+            ? `type=${chosen.type} imageIndex=${chosen.imageIndex}`
+            : shape === null
+              ? 'null (no timeline event <= t / empty timeline)'
+              : `null (frame has ${overlays.length} mouth overlays)`;
+          console.info(`[vivify:lipsync] t=${Math.round(t)} shape=${shape} -> ${reason}`);
+        }
         timer = this.clock.setTimeout(tick, LIPSYNC_TICK_MS);
       };
       tick();
