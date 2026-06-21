@@ -19,6 +19,7 @@ FROM debian:bookworm-slim
 # "xauth command not found". (mcookie, the wrapper's other dep, is in the base image.)
 RUN dpkg --add-architecture i386 && apt-get update && apt-get install -y --no-install-recommends \
       wine wine32 xvfb xauth winbind cabextract ca-certificates \
+      pulseaudio pulseaudio-utils \
       gcc-mingw-w64-i686 g++-mingw-w64-i686 \
       curl gnupg \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
@@ -46,6 +47,11 @@ WORKDIR /opt/vivify
 COPY vendor/ /opt/vendor/
 RUN set -eux; \
     wineboot --init; wineserver -w; \
+    # Cycle 7: point Wine's audio at the PulseAudio driver (the null sink is provided at \
+    # runtime by entrypoint.sh) so MMAudioDest can open a waveOut device. Best-effort: \
+    # Wine also autodetects, and a missing device surfaces loudly in the bridge's HRESULT. \
+    xvfb-run -a wine reg add 'HKCU\Software\Wine\Drivers' /v Audio /d pulse /f || true; \
+    wineserver -w; \
     SYS="$WINEPREFIX/drive_c/windows/system32"; \
     SPEECHDIR="$WINEPREFIX/drive_c/windows/speech"; \
     FONTS="$WINEPREFIX/drive_c/windows/Fonts"; \
@@ -118,7 +124,16 @@ RUN set -eux; cd /opt/vivify/bridge; \
 # (emits dist/ via tsc --build), then `docker build services/voice-server`.
 COPY dist/ /opt/vivify/dist/
 
+# --- dummy audio device (Cycle 7): PulseAudio null sink for Wine's MMAudioDest ---
+# entrypoint.sh starts the null sink before the server; the bridge (spawned per request)
+# inherits PULSE_SERVER. See docs/cycles/cycle-7-realtime-audio.md.
+COPY pulse-null.pa /etc/pulse/vivify-null.pa
+COPY entrypoint.sh /opt/vivify/entrypoint.sh
+RUN chmod +x /opt/vivify/entrypoint.sh
+
 ENV PORT=8080 \
+    PULSE_SERVER=unix:/tmp/pulse-socket \
     VIVIFY_SAPI4_BRIDGE="xvfb-run -a wine /opt/vivify/bridge/sapi4-mouth.exe"
 EXPOSE 8080
+ENTRYPOINT ["/opt/vivify/entrypoint.sh"]
 CMD ["node", "dist/main.js"]

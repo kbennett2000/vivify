@@ -1,0 +1,7 @@
+# Minimal PulseAudio config for headless Wine (Cycle 7). MMAudioDest (real-time audio)
+# opens a waveOut device inside ITTSEnum::Select(); a container has no sound card, so we
+# provide a NULL sink that accepts and discards audio. An anonymous unix socket lets the
+# (root) Wine process connect to the (pulse-user) system daemon.
+load-module module-native-protocol-unix auth-anonymous=1 socket=/tmp/pulse-socket
+load-module module-null-sink sink_name=dummy sink_properties=device.description=dummy_output
+set-default-sink dummy
