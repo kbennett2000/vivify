@@ -32,15 +32,26 @@ Each row links its build-cycle doc (`docs/cycles/`) and any load-bearing decisio
 | 16  | Per-platform install pages     | Hand-held Windows / macOS / Linux setup, zero assumptions                       | **Merged** (PR #18). Tier 1 (browser voice) + Tier 2 (authentic voice) per platform. `cycle-16-install-pages.md` |
 | 17  | Developer documentation        | Get a competent developer productive fast                                       | **Merged** (PR #20). The five `docs/developers/*` pages: overview, quickstart, API, providers, bundles. `cycle-17-developer-page.md` |
 | 18  | Screenshots + GIFs             | Real images of the running app — including Genie talking with the mouth moving  | **Merged** (PRs #21 tooling, #22 assets). Playwright capture tooling + committed screenshots/GIFs of the running app (authentic TruVoice lip-sync captured). `cycle-18-screenshots.md`, ADR-0028 |
+| 19  | Doc drift correctness pass     | Fix stale "(coming soon)" markers + bring the roadmap current                   | **Merged** (PR #23). `cycle-19-doc-drift.md` |
+| 20  | Authentic-voice docs           | Write the `docs/voice/*` cluster — overview / setup / sourcing                  | **Merged** (PR #24). `cycle-20-voice-docs.md` |
+| 21  | Help cluster                   | Write `getting-started.md`, `faq.md`, `troubleshooting.md`                      | **Merged** (PR #25). `cycle-21-help-cluster.md` |
+| 22  | Final docs polish              | Roadmap accuracy + convention fix, a typo, and the full characters gallery      | **Merged.** `cycle-22-final-polish.md` |
 
-## In progress / planned
+> **Roadmap convention (from Cycle 22).** This table is **factual, merged history only** — a row is added
+> when a cycle merges, and its "Merged" status never goes stale. We deliberately do **not** keep an "in
+> progress (this PR)" row: that pattern self-stales on every merge (and did, repeatedly). Forward-looking
+> work lives in the section below, which never references the current in-flight PR.
 
-| #   | Cycle                       | The point                                                              | Status                                                              |
-| --- | --------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| 19  | Doc drift correctness pass  | Fix stale "(coming soon)" markers + bring this roadmap current        | **In progress** (this PR). `cycle-19-doc-drift.md`                  |
-| —   | Help pages                  | Write the remaining stubs: getting-started, FAQ, troubleshooting      | Planned                                                            |
-| —   | Voice docs                  | Write `voice/overview.md`, `voice/setup.md`, `voice/sourcing-components.md` | Planned (the install pages already cover the Tier-2 walkthrough — consolidate, don't duplicate) |
-| —   | Thin-page polish (optional) | Flesh out the characters gallery; round out `architecture.md`         | Optional                                                          |
+## Ideas / not yet scheduled
+
+Possibilities, not committed work — and deliberately not tied to any in-flight PR, so this section never
+goes stale on a merge:
+
+- **A hosted live demo** — a one-click MASH instance so visitors can try a character without installing
+  anything (today there's no hosted demo; you run it locally).
+- **Publish the `@vivify/*` packages to npm** — they're currently workspace-local/unpublished, so the
+  developer quickstart's `npm i` is framed as "once published"; publishing would make it literal.
+- **Broader character coverage** — chip away at the long tail below.
 
 ## Known long tail (not defeatism, just honesty)
 
