@@ -1,0 +1,40 @@
+# ADR-0025: Repo front door — adopt the parked Vision & docs spec as the binding voice/structure authority, ship only what's real, signpost the rest at canonical paths, no polish-theater
+Status: Accepted · Date: 2026-06-21
+
+## Context
+The build is feature-complete (Cycle 12: authentic TruVoice voice, dense lip-sync, pose stacking, Docker, disk TTS cache), but the repo's front door was still a terse dev blurb — useless to the audience we actually want: a zero-assumptions visitor, including non-technical, nostalgia-driven people who may never have heard "Microsoft Agent."
+
+A **Vision & docs spec** exists as the project's north star for all documentation and presentation — its voice rules (assume nothing; simpler-then-simpler; nostalgia is seasoning, never the spine; tiered onboarding; second person, present tense), its README section order, and its canonical `docs/` page layout. By choice, **that spec is not committed to the repo**; it is pasted in when a docs cycle needs it.
+
+The spec was written for a 12-cycle plan where docs/demo assets landed in its "Cycle 4/7." Reality diverges: we're feature-complete at Cycle 12, but there is **no hosted demo URL, no GIF/screenshot pipeline (Playwright is a later cycle), npm is unpublished, and the `docs/` explainer pages don't exist yet.** Cycle 13 (`docs/cycles/cycle-13-repo-shine.md`) implements the spec's README layout + voice + a banner for this audience — **docs/asset only, no code change** — and reconciles the spec's sequencing with that reality.
+
+## Decision
+
+**1. Adopt the parked Vision & docs spec as the binding voice/structure authority, even though it's not in the repo.**
+The spec is the single north star for all doc work: this cycle and every later docs cycle (getting-started, install pages, voice pages, developer docs, FAQ/glossary/credits) reads in its voice and follows its section order and canonical page paths. It lives outside the repo by choice and is pasted in when needed. WHY: one authority for voice and structure prevents every docs cycle from re-litigating tone and layout; keeping it out of the repo is a deliberate call, so this ADR records that the authority is binding regardless of where the document physically sits.
+
+**2. Split the spec's README layout into build-now vs signpost-as-coming (reconcile spec sequencing with reality).**
+The repo is past the spec's assumed sequencing, so the cycle keeps the spec's section **order + voice** and splits each section into **build-now** (banner, minimal badges, one-liner + hook, "what is this?", text character list, "try it in 60 seconds," inline developer snippet, "what you supply," credits, license) vs **signpost-as-coming** (GIF, install pages, voice overview, developer docs, FAQ/troubleshooting/glossary). Every _coming_ link points at the spec's **canonical** intended path (e.g. `docs/install/{windows,mac,linux}.md`, `docs/voice/overview.md`, `docs/developers/*`, `docs/glossary.md`). WHY: building only what's real now and linking the rest at the canonical paths means later cycles drop pages into place with **zero link churn**, and it avoids faked or dead content.
+
+**3. No faked badges, no dead demo button, no invented screenshots.**
+Badges are minimal and honest: license (MIT), runs-in-browser, status (feature-complete, pre-release) — npm and CI badges are **omitted** because npm is unpublished and a CI badge would be dead. The hero CTA ("See it move") points to running MASH **locally** (`docker compose up mash` → `http://localhost:8090`) because there is no hosted demo; the animated GIF and the character gallery are **signposted as coming** (the Playwright capture pipeline is a later cycle). WHY: honesty over polish-theater — a dead button or a fake screenshot erodes trust with the exact zero-assumptions newcomer we're courting.
+
+**4. Tiered onboarding with the Wine/Docker authentic-voice path always OFF the main road.**
+The README order is _see it → run it yourself (browser voice, nothing to install beyond Docker) → authentic TruVoice (opt-in upgrade)_. The quick playground is the main path; the authentic L&H/SAPI4 voice is a clearly-labeled upgrade on its own (coming) `docs/voice/overview.md` page, never inline on the main road. WHY: spec tension #1 — the involved Wine/Docker voice setup must never scare off a casual visitor, so its complexity is quarantined behind an explicit opt-in.
+
+**5. Nostalgia is deletable seasoning.**
+Winks live only in the top hook, the tagline, and set-off `💾 Remember when…` asides; the instructional spine reads clean for someone who has never heard of Microsoft Agent — every wink is deletable without losing an instruction. WHY: spec tension #2 / hard rule — the front door must teach a true newcomer, with nostalgia as a bonus for those who get it, never a prerequisite.
+
+**6. Banner: original SVG artwork, no MS/L&H IP, font-robust, theme-safe; social-preview PNG is an operator step.**
+`assets/banner.svg` evokes a late-90s desktop window — teal desktop, raised silver chrome, navy→blue gradient title bar (`vivify.exe`), min/max/close buttons, a `vivify` wordmark + plain-text tagline, and a generic speech balloon with a talking `•••` — using **only period UI furniture + typography**: no character pixels, no Genie lamp, no Microsoft/L&H imagery. Decorative sparkles are **drawn shapes** (a path `#spark`), not Unicode glyphs, so the art doesn't depend on the viewer's installed fonts (only the plain-Latin wordmark/tagline do). The SVG carries its **own opaque teal background**, so it stays legible on GitHub light _and_ dark themes. The 1280×640 social-preview PNG export is **deferred to the operator** because no SVG rasterizer is available in the sandbox and a docs-only cycle won't add a dependency. WHY: keeps the IP gate (ADR-0006 / `docs/legal-and-assets.md`), guarantees crisp rendering everywhere regardless of viewer fonts or theme, and avoids pulling in tooling for one image.
+
+## Consequences
+- **The README ships what's real and signposts the rest at canonical paths.** Later docs cycles drop pages in with no link churn; the front door never shows a dead button, a faked badge, or an invented screenshot. The authentic-voice complexity stays off the main road, and nostalgia stays deletable — so a true newcomer can follow the spine.
+- **This sets the voice precedent for all later docs cycles.** Every subsequent page (getting-started, install/\*, voice/\*, developers/\*, faq/glossary/credits) is written to the same parked spec's voice and structure recorded here; this ADR is the standing reference for why those pages read the way they do and live where they do.
+- **Verification boundary (CI vs operator).** CI proves `pnpm -r typecheck && pnpm -r test && pnpm lint && pnpm format` stay green with **no code touched** (prettier covers the new/edited Markdown) and that the banner is valid, well-formed XML. The **operator** verifies what CI cannot: the README renders with the banner crisp on **both** light and dark themes, every `docs/...` link either resolves to an existing file (`legal-and-assets.md`, `architecture.md`, `roadmap.md`) or is clearly marked _coming_, the GitHub description + topics are pasted in, and — optionally — the 1280×640 social-preview PNG is exported (`rsvg-convert` / `inkscape` / `svgexport`) and uploaded under Settings → Social preview.
+- **No third-party IP.** The banner is original artwork built from generic period UI furniture and typography only — no character pixels, no MS/L&H imagery. No `.acs` files, engine binaries, or Wine prefix are committed. The repo's IP posture (ADR-0006) is preserved unchanged.
+
+## Related
+- ADR-0006 — MIT license, zero bundled third-party IP; the IP gate the banner is built to respect.
+- `docs/cycles/cycle-13-repo-shine.md` — the cycle this ADR records, including the build-now/signpost table, the paste-ready GitHub description/topics, and the operator verification steps.
+- `docs/legal-and-assets.md` — the existing "what you supply" guide the README links for characters and the speech software.
