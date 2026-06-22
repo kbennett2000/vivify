@@ -10,7 +10,28 @@
 # steps were derived by inspecting the actual CAB installers + their INF scripts, but
 # whether advpack/regsvr32 fully complete *under Wine* is the remaining unverified step;
 # the verification RUN below fails the build loudly (with diagnostics) if they don't.
+#
+# BUILD CONTEXT IS THE REPO ROOT (Cycle 15): the server's `dist/` is now compiled INSIDE
+# this image (the `build` stage below) instead of on the host, so a user needs only Docker
+# (no host Node/pnpm). Build via `docker compose up` (compose sets context: .), or by hand:
+#   docker build -f services/voice-server/Dockerfile -t vivify-voice .
+# The user still supplies the gitignored proprietary files under services/voice-server/vendor/
+# (spchapi.exe, tv_enua.exe, sdk/include/speech.h) — see docs/legal-and-assets.md. A
+# Dockerfile-specific ignore (services/voice-server/Dockerfile.dockerignore) lets THIS build
+# read vendor/ while the root .dockerignore keeps it out of the MASH image.
 
+# --- stage 1: compile the Node server's dist/ from the pnpm workspace (no host toolchain) ---
+# Mirrors apps/mash/Dockerfile: copy the monorepo, install with the pinned pnpm, build only
+# the voice-server (its `build` = `tsc --build`, which builds its @vivify/types project
+# reference first, then emits services/voice-server/dist). @vivify/types imports are type-only.
+FROM node:20-slim AS build
+RUN corepack enable
+WORKDIR /repo
+COPY . .
+RUN pnpm install --frozen-lockfile
+RUN pnpm --filter @vivify/voice-server run build
+
+# --- stage 2: the Wine + SAPI4 + TruVoice runtime image ---
 FROM debian:bookworm-slim
 
 # 32-bit Wine + Xvfb (SAPI4/TruVoice are 32-bit; the bridge needs a display) + build + Node.
@@ -44,7 +65,7 @@ WORKDIR /opt/vivify
 #                  CLSID {D67C0280-C743-11cd-80E5-00AA003E4B50} -> Speech.dll via AddReg.
 #   tv_enua.exe -> tv_enua.dll (engine) + tvenuax.dll + msvcp50/msvcirt runtimes;
 #                  tv_enua.inf self-registers them with regsvr32.
-COPY vendor/ /opt/vendor/
+COPY services/voice-server/vendor/ /opt/vendor/
 RUN set -eux; \
     wineboot --init; wineserver -w; \
     # Cycle 7: point Wine's audio at the PulseAudio driver (the null sink is provided at \
@@ -108,27 +129,27 @@ RUN set -eu; \
 # to open the exe with c0000135 (STATUS_DLL_NOT_FOUND) before the engine is even reached.
 # Build ANSI (no -municode): the SAPI4 interface macros resolve to the *A* forms the code
 # targets. `set -e` + the trailing `test -f` make a failed compile abort the build.
-COPY bridge/ /opt/vivify/bridge/
+COPY services/voice-server/bridge/ /opt/vivify/bridge/
 RUN set -eux; cd /opt/vivify/bridge; \
     test -f "$SAPI4_SDK/include/speech.h" \
-      || { echo "FATAL: speech.h missing — drop the SAPI4 SDK header at services/voice-server/vendor/sdk/include/speech.h (see bridge/README.md)"; exit 1; }; \
+      || { echo "FATAL: speech.h missing — drop the user-supplied SAPI4 SDK header at services/voice-server/vendor/sdk/include/speech.h (see docs/legal-and-assets.md). It is gitignored and never shipped."; exit 1; }; \
     i686-w64-mingw32-g++ -O2 -static -static-libgcc -static-libstdc++ \
       -o sapi4-mouth.exe sapi4-mouth.cpp \
       -I"$SAPI4_SDK/include" -lole32 -loleaut32 -luuid -lwinmm; \
     test -f sapi4-mouth.exe
 
 # --- the Node HTTP server ---
-# The server uses ONLY Node built-ins at runtime (its @vivify/types imports are
-# type-only and erased at compile), so we just copy the prebuilt dist and run it.
-# Build dist first on the host: `pnpm --filter @vivify/voice-server typecheck`
-# (emits dist/ via tsc --build), then `docker build services/voice-server`.
-COPY dist/ /opt/vivify/dist/
+# The server uses ONLY Node built-ins at runtime (its @vivify/types imports are type-only and
+# erased at compile), so we just copy the dist built in stage 1 and run it with the runtime Node
+# (no pnpm / TypeScript toolchain ships in this image). Cycle 15: dist is compiled IN-IMAGE (the
+# `build` stage), so the host no longer needs Node/pnpm and no prebuilt dist/ is required.
+COPY --from=build /repo/services/voice-server/dist /opt/vivify/dist/
 
 # --- dummy audio device (Cycle 7): PulseAudio null sink for Wine's MMAudioDest ---
 # entrypoint.sh starts the null sink before the server; the bridge (spawned per request)
 # inherits PULSE_SERVER. See docs/cycles/cycle-7-realtime-audio.md.
-COPY pulse-null.pa /etc/pulse/vivify-null.pa
-COPY entrypoint.sh /opt/vivify/entrypoint.sh
+COPY services/voice-server/pulse-null.pa /etc/pulse/vivify-null.pa
+COPY services/voice-server/entrypoint.sh /opt/vivify/entrypoint.sh
 RUN chmod +x /opt/vivify/entrypoint.sh
 
 # Cycle 10 (warm engine): DISPLAY points at the persistent Xvfb that entrypoint.sh starts,

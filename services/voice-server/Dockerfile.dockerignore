@@ -1,0 +1,42 @@
+# Build-context ignore for services/voice-server/Dockerfile (Cycle 15).
+#
+# BuildKit uses THIS file instead of the repo-root .dockerignore for the voice build (compose
+# sets context: . + dockerfile: services/voice-server/Dockerfile). It mirrors the root ignore
+# EXCEPT it deliberately ALLOWS services/voice-server/vendor/ — the voice image installs the
+# user-supplied SAPI4/TruVoice runtime + speech.h from vendor/ at build time. vendor/ stays
+# gitignored (never committed), and the root .dockerignore still excludes it, so it can never
+# enter the MASH image.
+
+# Dependencies + build outputs (reinstalled / rebuilt inside the image)
+**/node_modules
+**/dist
+**/build
+**/coverage
+**/*.tsbuildinfo
+.turbo
+
+# VCS / editor / CI noise
+.git
+.github
+.gitignore
+**/.DS_Store
+
+# Other engine/IP artifacts we still never want in the build context
+services/voice-server/.wine/
+services/voice-server/prefix/
+services/voice-server/bridge/*.exe
+services/voice-server/bridge/*.dll
+services/voice-server/bridge/*.o
+**/*.acs
+**/*.acf
+**/*.aca
+**/*.acd
+
+# MASH built-in bundles are local-only, user-supplied
+apps/mash/public/characters/
+
+# Local-only Claude config
+.claude/settings.local.json
+
+# NOTE: services/voice-server/vendor/ is intentionally NOT listed here — the voice image needs
+# the user-supplied SAPI4/TruVoice installers + speech.h from it. It stays gitignored.
