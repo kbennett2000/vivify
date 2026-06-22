@@ -122,7 +122,7 @@ That voice came from old Windows speech software that can't run in a browser dir
 a small background helper. It's a more involved, opt-in setup — completely separate from the quick
 playground above — and there's a dedicated, hand-held walkthrough for it:
 
-➡️ **[The authentic voice — what it is and how to set it up](docs/voice/overview.md)** _(coming soon)_
+➡️ **[The authentic voice — what it is and how to set it up](docs/voice/overview.md)**
 
 > Don't need the original voice? The playground still talks using your browser's built-in voice, so you
 > never hit a dead end.
@@ -179,7 +179,7 @@ clean and legal, _you_ bring two things yourself:
    software that you install into the voice helper.
 
 It's all explained, with exactly where to get each piece, in
-**[`docs/legal-and-assets.md`](docs/legal-and-assets.md)** (and a friendlier consumer guide is coming in
+**[`docs/legal-and-assets.md`](docs/legal-and-assets.md)** (with a friendlier consumer guide in
 [`docs/voice/sourcing-components.md`](docs/voice/sourcing-components.md)).
 
 > In short: the _engine_ is ours and open. The _characters and voices_ are their owners', and you supply
