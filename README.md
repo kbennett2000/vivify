@@ -108,8 +108,7 @@ system:
 - 🍎 **macOS** → [`docs/install/mac.md`](docs/install/mac.md)
 - 🐧 **Linux** → [`docs/install/linux.md`](docs/install/linux.md)
 
-New to all of this? Start with the gentle overview: [`docs/getting-started.md`](docs/getting-started.md)
-_(coming soon)_.
+New to all of this? Start with the gentle overview: [`docs/getting-started.md`](docs/getting-started.md).
 
 ---
 
@@ -190,9 +189,8 @@ It's all explained, with exactly where to get each piece, in
 ## More help
 
 - ❓ **FAQ** — "Is this legal?", "Why is there no sound?", "Which characters work?" →
-  [`docs/faq.md`](docs/faq.md) _(coming soon)_
+  [`docs/faq.md`](docs/faq.md)
 - 🛠️ **Troubleshooting** — common hiccups, per platform → [`docs/troubleshooting.md`](docs/troubleshooting.md)
-  _(coming soon)_
 - 📖 **Glossary** — every technical term, in plain English → [`docs/glossary.md`](docs/glossary.md)
 
 ---
