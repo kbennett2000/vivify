@@ -134,10 +134,16 @@ RUN chmod +x /opt/vivify/entrypoint.sh
 # Cycle 10 (warm engine): DISPLAY points at the persistent Xvfb that entrypoint.sh starts,
 # and the per-request bridge is a plain `wine …` — no `xvfb-run -a`, which spawned a fresh
 # Xvfb + paid wineserver/wineboot cold-start on every /tts. See docs/cycles/cycle-10-latency.md.
+# Cycle 12: enable the disk-persistent TTS cache in the container (the code default is OFF, so
+# local/CI runs are unaffected). Repeated phrases are served from /var/cache/vivify-tts in tens of
+# ms — no Wine/SAPI4/capture. docker-compose.yml mounts a named volume here so the cache survives
+# rebuild/recreate; TtsCache.init() creates the dir if the mount doesn't. Caps default to unbounded
+# (override with VIVIFY_CACHE_MAX_ENTRIES / VIVIFY_CACHE_MAX_BYTES). See docs/cycles/cycle-12-tts-cache.md.
 ENV PORT=8080 \
     PULSE_SERVER=unix:/tmp/pulse-socket \
     DISPLAY=:99 \
-    VIVIFY_SAPI4_BRIDGE="wine /opt/vivify/bridge/sapi4-mouth.exe"
+    VIVIFY_SAPI4_BRIDGE="wine /opt/vivify/bridge/sapi4-mouth.exe" \
+    VIVIFY_CACHE_DIR=/var/cache/vivify-tts
 EXPOSE 8080
 ENTRYPOINT ["/opt/vivify/entrypoint.sh"]
 CMD ["node", "dist/main.js"]

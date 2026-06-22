@@ -93,6 +93,18 @@ replaced gated synthesis on a per-request `parec`'s first sample — no longer n
   server collects the raw PCM from capture stdout, wraps it into a WAV header, and **trims
   leading silence** so the WAV's first audible sample aligns with timeline `t≈0`.
 
+**Disk-persistent cache (Cycle 12).** Every synthesized phrase is cached to disk, keyed by
+`hash(text + voice)` (`src/cache.ts`). The cached bytes ARE the `/tts` response payload, so a
+**repeat is served from disk in tens of ms with NO Wine, SAPI4, or capture** — a hit reads the
+file and writes it to the socket verbatim, and opens no capture window (it doesn't even queue
+behind an in-flight synthesis). The `[tts-timing]` line shows `cache=HIT total=Nms (diskRead=…)`
+on a hit and appends `cache=miss` on a synthesized request. Because a hit bypasses the live
+engine + capture path entirely, it **can't** carry the first-Speak cold-start clip that only
+afflicts live capture. Caching is **enabled in the container by default** (the image sets
+`VIVIFY_CACHE_DIR`) and **disabled when no cache dir is configured** (the code default — so
+`pnpm`-local dev and CI are unchanged). See `../../docs/cycles/cycle-12-tts-cache.md` and
+ADR-0024.
+
 **Honest failure.** If the capture produces no audio (or only silence below the minimum),
 `/tts` returns **500** (`null-sink capture produced no audio`). The server never returns a
 faked silent WAV.
@@ -148,6 +160,17 @@ operator-collected (no Wine/PulseAudio in CI) in the cycle doc's table:
 
 Config (env): `PORT` (default 8080), `VIVIFY_SAPI4_BRIDGE` (the bridge command),
 `VIVIFY_SAPI4_TIMEOUT_MS` (kill a hung bridge, default 120000).
+
+Cache (env, Cycle 12): `VIVIFY_CACHE_DIR` — the cache directory; the image sets it to
+`/var/cache/vivify-tts`, and leaving it **unset disables caching**. `VIVIFY_CACHE_MAX_ENTRIES`
+and `VIVIFY_CACHE_MAX_BYTES` — both **default unbounded** ("cache everything"); set either to
+evict the oldest entries by mtime on write.
+
+**Cache persistence.** `docker compose` mounts a named volume
+(`vivify-tts-cache:/var/cache/vivify-tts`), so the cache survives `docker compose down && up`;
+`docker compose down -v` wipes it. For a bare `docker run`, add
+`-v vivify-tts-cache:/var/cache/vivify-tts`. On boot the server logs
+`[cache] N entries, M on disk`.
 
 ## Local dev without Wine
 The HTTP layer can be exercised against a fake bridge:

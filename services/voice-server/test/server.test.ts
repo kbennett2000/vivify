@@ -6,6 +6,9 @@
 // test double, NOT a mock of the code under test). No Wine required.
 
 import { fileURLToPath } from 'node:url';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { Server } from 'node:http';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createVoiceServer, warmUp } from '../src/server.js';
@@ -591,6 +594,123 @@ describe('voice-server startup warmup waits for the reader', () => {
     expect(lines.some((l) => l.includes('[warmup] failed'))).toBe(false);
     // The warmup also logs its own audio metric, proving the synth actually ran (not skipped).
     expect(lines.some((l) => l.includes('[warmup tts-audio]'))).toBe(true);
+  });
+});
+
+describe('voice-server disk cache (Cycle 12: repeat is served from disk)', () => {
+  // With a cacheDir configured, the first /tts for a phrase synthesizes (via the fake bridge)
+  // and writes the payload to disk; an IDENTICAL second /tts is served from disk — byte-identical
+  // body, `cache:'hit'` timing, and NO bridge work (bridge stage is null, synth stages are 0). A
+  // different voice is a separate key → miss. Each test uses its own temp cache dir.
+  let server: Server;
+  let baseUrl: string;
+  let cacheDir: string;
+  const timings: TtsTiming[] = [];
+
+  beforeAll(async () => {
+    cacheDir = await mkdtemp(join(tmpdir(), 'vivify-server-cache-'));
+    server = createVoiceServer({
+      bridgeCommand: `node ${fakeBridgePath}`,
+      ...baseCaptureOpts,
+      cacheDir,
+      onTiming: (t) => {
+        timings.push(t);
+      },
+    });
+    const port = await listenOnEphemeralPort(server);
+    baseUrl = `http://127.0.0.1:${port}`;
+  });
+
+  afterAll(async () => {
+    await closeServer(server);
+    await rm(cacheDir, { recursive: true, force: true });
+  });
+
+  const postTts = (body: unknown): Promise<Response> =>
+    fetch(`${baseUrl}/tts`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  it('first request misses (synthesizes), identical second request hits (byte-identical, no bridge)', async () => {
+    timings.length = 0;
+    const reqBody = { text: 'cache me please', voice: { engineModeId: 'GENIE', speed: 157 } };
+
+    const first = await postTts(reqBody);
+    expect(first.status).toBe(200);
+    const firstBytes = Buffer.from(await first.arrayBuffer());
+
+    const second = await postTts(reqBody);
+    expect(second.status).toBe(200);
+    const secondBytes = Buffer.from(await second.arrayBuffer());
+
+    // The cached response is byte-for-byte identical to the synthesized one.
+    expect(secondBytes.equals(firstBytes)).toBe(true);
+
+    // Two timings fired: a miss then a hit (the observable for the [tts-timing] marker).
+    expect(timings.length).toBe(2);
+    const missTiming = timings[0]!;
+    const hitTiming = timings[1]!;
+    expect(missTiming.cache).toBe('miss');
+    expect(missTiming.bridge).not.toBeNull(); // the miss actually ran the bridge
+
+    expect(hitTiming.cache).toBe('hit');
+    // A hit bypasses synthesis entirely: no bridge stages, synth stages are 0.
+    expect(hitTiming.bridge).toBeNull();
+    expect(hitTiming.bridgeMs).toBe(0);
+    expect(hitTiming.windowFirstByteMs).toBe(0);
+    expect(typeof hitTiming.diskReadMs).toBe('number');
+  });
+
+  it('a different voice for the same text is a separate key → miss (no collision)', async () => {
+    timings.length = 0;
+    const text = 'same text, different voice';
+
+    const a = await postTts({ text, voice: { engineModeId: 'GENIE' } });
+    expect(a.status).toBe(200);
+    const b = await postTts({ text, voice: { engineModeId: 'ROBBY' } });
+    expect(b.status).toBe(200);
+
+    // Both miss — they don't share a cache entry.
+    expect(timings.map((t) => t.cache)).toEqual(['miss', 'miss']);
+
+    // ...and a repeat of the FIRST voice now hits (proving it was cached under its own key).
+    const aAgain = await postTts({ text, voice: { engineModeId: 'GENIE' } });
+    expect(aAgain.status).toBe(200);
+    expect(timings[timings.length - 1]?.cache).toBe('hit');
+  });
+});
+
+describe('voice-server without a cache (default: no cacheDir → cache undefined)', () => {
+  let server: Server;
+  let baseUrl: string;
+  let lastTiming: TtsTiming | undefined;
+
+  beforeAll(async () => {
+    server = createVoiceServer({
+      bridgeCommand: `node ${fakeBridgePath}`,
+      ...baseCaptureOpts,
+      onTiming: (t) => {
+        lastTiming = t;
+      },
+    });
+    const port = await listenOnEphemeralPort(server);
+    baseUrl = `http://127.0.0.1:${port}`;
+  });
+
+  afterAll(async () => {
+    await closeServer(server);
+  });
+
+  it('serves /tts normally and reports no cache marker when caching is disabled', async () => {
+    const res = await fetch(`${baseUrl}/tts`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'no cache here' }),
+    });
+    expect(res.status).toBe(200);
+    expect(lastTiming?.cache).toBeUndefined();
   });
 });
 

@@ -73,6 +73,14 @@ export interface TtsTiming {
   totalMs: number;
   /** Per-stage bridge breakdown parsed from stderr, or null if absent/garbled. */
   bridge: BridgeTiming | null;
+  /**
+   * Cycle 12: cache outcome for this request. `'hit'` = served from disk (no synthesis;
+   * `bridge` is null and the synth stages are 0); `'miss'` = synthesized then cached;
+   * undefined = caching disabled (no cache dir configured). Lets the operator SEE the speedup.
+   */
+  cache?: 'hit' | 'miss';
+  /** Cycle 12 (hit only): time to read the cached payload off disk, ms — expected tens of ms. */
+  diskReadMs?: number;
 }
 
 /**
@@ -81,7 +89,13 @@ export interface TtsTiming {
  * (the COM/DLL/device teardown that the bridge's fast `_Exit` is meant to skip).
  */
 export function formatTtsTiming(t: TtsTiming): string {
+  // Cycle 12: a cache HIT skips synthesis entirely — render just the disk read + total so the
+  // speedup is obvious at a glance (no bridge/window stages to report).
+  if (t.cache === 'hit') {
+    return `cache=HIT total=${t.totalMs}ms (diskRead=${t.diskReadMs ?? 0})`;
+  }
   const b = t.bridge;
+  const cachePart = t.cache === 'miss' ? ' cache=miss' : '';
   const teardownMs = b ? Math.max(0, t.bridgeMs - t.wineLoadMs - b.totalMs) : null;
   const bridgePart = b
     ? `bridge[init=${b.initMs} passA=${b.passATotalMs}(ttfb ${b.passATtfbMs}) ` +
@@ -94,6 +108,7 @@ export function formatTtsTiming(t: TtsTiming): string {
   return (
     `total=${t.totalMs}ms (windowFirstByte=${t.windowFirstByteMs} bridgeWall=${t.bridgeMs} ${gapPart} ` +
     `build=${t.buildMs} encode=${t.encodeMs}) ` +
-    bridgePart
+    bridgePart +
+    cachePart
   );
 }
