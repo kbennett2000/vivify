@@ -101,9 +101,9 @@ Running the playground above is the fast path. When you're ready to set things u
 computer — including the authentic voice — there's a friendly, step-by-step guide for each operating
 system:
 
-- 🪟 **Windows** → [`docs/install/windows.md`](docs/install/windows.md) _(coming soon)_
-- 🍎 **macOS** → [`docs/install/mac.md`](docs/install/mac.md) _(coming soon)_
-- 🐧 **Linux** → [`docs/install/linux.md`](docs/install/linux.md) _(coming soon)_
+- 🪟 **Windows** → [`docs/install/windows.md`](docs/install/windows.md)
+- 🍎 **macOS** → [`docs/install/mac.md`](docs/install/mac.md)
+- 🐧 **Linux** → [`docs/install/linux.md`](docs/install/linux.md)
 
 New to all of this? Start with the gentle overview: [`docs/getting-started.md`](docs/getting-started.md)
 _(coming soon)_.

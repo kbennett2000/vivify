@@ -11,8 +11,8 @@ we'll explain it from scratch.
 
 ## Pick your platform
 
-Setting it up on your own computer? Start here — each guide _will be_ step-by-step, with screenshots
-(they're being written now).
+Setting it up on your own computer? Start here — each guide is step-by-step (screenshots are coming in a
+later update).
 
 | 🪟 Windows | 🍎 macOS | 🐧 Linux |
 | --- | --- | --- |
