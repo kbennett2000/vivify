@@ -12,6 +12,8 @@ Let's start from zero. No background needed.
 show a little speech bubble with their words. vivify recreates them faithfully: the real pictures, the real
 animations, even their original voices.
 
+![Genie moving and talking in vivify, running in a web browser](../assets/gifs/genie-speaking.gif)
+
 That's it. The rest of this page fills in the story, in case the words "Microsoft Agent" don't ring a bell
 — and for a lot of people, they won't.
 

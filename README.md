@@ -20,8 +20,9 @@ There's no hosted click-to-try demo yet _(coming soon)_. But you can run the pla
 machine in about a minute — see **[Try it in 60 seconds](#-try-it-in-60-seconds)** below. It's a little
 sandbox where you load a character, click its animations, and type to make it talk.
 
-> 🎬 _An animated preview (a character actually moving and talking) is on the way — it's generated from the
-> live demo, which arrives in a later step._
+![Genie moving and talking in the MASH playground, rendered entirely in the browser](assets/gifs/genie-speaking.gif)
+
+_Genie, loaded from a `.acs` file and speaking in his authentic voice — running entirely in your browser._
 
 ---
 
@@ -60,7 +61,9 @@ scratch, zero knowledge assumed.
 The original four — **Genie, Merlin, Peedy, Robby** — plus Office favorites like **Clippy** and **Rover**,
 and any other character anyone ever made. If it's a `.acs` file, vivify aims to run it.
 
-> 🖼️ _A picture gallery of the characters is coming once the demo-capture step lands._
+![Genie, rendered in the browser by vivify](assets/screenshots/genie-portrait.png)
+
+_The gallery grows as characters are captured — here's Genie. Load any `.acs` to meet the rest._
 
 ---
 

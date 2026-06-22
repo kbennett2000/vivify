@@ -55,6 +55,8 @@ agent.speak('Hello! I am alive in your browser.');
 
 That's it — he's alive, and talking.
 
+![A character loaded in the browser and speaking, driven by @vivify/core](../../assets/gifs/genie-speaking.gif)
+
 ### Why pass a provider at all?
 
 `createAgent`'s **default** provider is the silent `StubTtsProvider`: the character animates, but you

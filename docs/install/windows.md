@@ -13,7 +13,7 @@ There are **two tiers**, and you can do just the first:
 > New to all of this? The 60-second overview is **[What is this?](../what-is-this.md)**. Stuck on a word?
 > The **[Glossary](../glossary.md)** explains every term in plain English.
 
-> 📸 _Screenshots for every step are coming in a later update — for now the steps are written out in full._
+> 📸 _Curious what success looks like? There's a screenshot of the running app at the end of Step 4._
 
 ---
 
@@ -72,12 +72,14 @@ starts fast.) When you see it settle and keep running, it's ready. Leave this wi
 
 1. Open your web browser to **http://localhost:8090**.
 2. You'll need a character file (a `.acs` file). vivify ships none — see **[where to get
-   one](../legal-and-assets.md)** (and the **[Characters](../characters.md)** page, _coming soon_). Drag
+   one](../legal-and-assets.md)** (and the **[Characters](../characters.md)** page). Drag
    the `.acs` file onto the page.
 3. Click any animation in the list to play it. Type a sentence and click **Speak**.
 
 **That's it — it's alive!** 🎉 The character moves, shows its speech balloon, and talks using your
 browser's voice.
+
+![The MASH playground running at localhost:8090 — a character on stage with its animation grid](../../assets/screenshots/genie-app.png)
 
 > To stop it: go back to the terminal and press **Ctrl + C**.
 

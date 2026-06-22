@@ -7,12 +7,14 @@ path here for you.
 New to all of this? You're in exactly the right place — start with **[What is this?](what-is-this.md)** and
 we'll explain it from scratch.
 
+![The MASH playground running in a browser — a character on stage with its animation grid](../assets/screenshots/genie-app.png)
+
 ---
 
 ## Pick your platform
 
-Setting it up on your own computer? Start here — each guide is step-by-step (screenshots are coming in a
-later update).
+Setting it up on your own computer? Start here — each guide is step-by-step, with a screenshot of the
+running app at the finish line.
 
 | 🪟 Windows | 🍎 macOS | 🐧 Linux |
 | --- | --- | --- |

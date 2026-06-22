@@ -145,8 +145,9 @@ vivify is built in **small, reviewable cycles**. The working model, in brief (th
 - **Conventional commits, one PR per cycle.** CI (typecheck + test + lint) must be green **and** the
   diff reviewed before merge — never force-merged on green alone.
 
-> 🚧 **Screenshots and GIFs are coming in the next cycle.** This page is words for now; a character
-> actually moving and talking is worth more than a paragraph, and that's on the way.
+![The MASH demo running — a character on stage beside its animation grid, built only on @vivify/core's public API](../../assets/screenshots/genie-app.png)
+
+_The MASH demo (`apps/mash`) running on the public API — both the showcase and the worked example._
 
 ---
 
