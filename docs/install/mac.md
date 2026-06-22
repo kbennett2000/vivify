@@ -147,8 +147,8 @@ authentic voice, with the mouth moving in time. 🪄
 
 ## Trouble?
 
-- **[Troubleshooting](../troubleshooting.md)** — common hiccups and fixes _(coming soon)_.
-- **[FAQ](../faq.md)** — "Is this legal?", "Why no sound?", "Which characters work?" _(coming soon)_.
+- **[Troubleshooting](../troubleshooting.md)** — common hiccups and fixes.
+- **[FAQ](../faq.md)** — "Is this legal?", "Why no sound?", "Which characters work?"
 - **[Glossary](../glossary.md)** — every term, in plain English.
 
 ---
