@@ -8,8 +8,9 @@
 # handled by the voice server reflecting the request Origin.)
 #
 # `docker compose up mash` runs just the demo (no voice binaries required). The `voice`
-# service needs your user-supplied engine files in services/voice-server/vendor/ and a
-# prebuilt dist (`pnpm --filter @vivify/voice-server typecheck`) — see that service's README.
+# service needs your user-supplied engine files in services/voice-server/vendor/
+# (spchapi.exe, tv_enua.exe, sdk/include/speech.h). It compiles its own dist/ in-image
+# (Cycle 15), so no host Node/pnpm is needed — just `docker compose up`. See that service's README.
 services:
   mash:
     build:
@@ -25,7 +26,13 @@ services:
 
   voice:
     build:
-      context: services/voice-server
+      # Cycle 15: context is the REPO ROOT so the image can compile the server's dist/ from the
+      # pnpm workspace itself (no host Node/pnpm, no prebuilt dist). The Dockerfile's own ignore
+      # (services/voice-server/Dockerfile.dockerignore) lets this build read the gitignored
+      # vendor/ (user-supplied SAPI4/TruVoice + speech.h) while the root .dockerignore keeps
+      # vendor out of the MASH image.
+      context: .
+      dockerfile: services/voice-server/Dockerfile
     image: vivify-voice
     ports:
       - '8080:8080'

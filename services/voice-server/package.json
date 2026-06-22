@@ -15,6 +15,7 @@
     "dist"
   ],
   "scripts": {
+    "build": "tsc --build",
     "typecheck": "tsc --build --pretty && tsc -p tsconfig.test.json",
     "test": "vitest run --passWithNoTests",
     "start": "node dist/main.js",

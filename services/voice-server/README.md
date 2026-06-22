@@ -10,19 +10,30 @@ Full design: `../../docs/cycles/cycle-5-voice.md`.
 > or run** in vivify's sandbox (no Wine there). The GO/NO-GO is proven only by
 > running the curl test below in a real Docker/Wine environment.
 
-## 1. Supply the proprietary runtime (never committed — gitignored `vendor/`)
-Drop into `services/voice-server/vendor/` (see `../../docs/legal-and-assets.md`):
+## 1. Drop in the three proprietary files (never committed — gitignored `vendor/`)
+Drop into `services/voice-server/vendor/` (sourcing is in `../../docs/legal-and-assets.md`):
 - `spchapi.exe` — Microsoft Speech API 4.0 runtime.
 - `tv_enua.exe` — L&H TruVoice American English (Genie's voice).
+- `sdk/include/speech.h` — the SAPI4 SDK header the bridge compiles against, i.e.
+  `services/voice-server/vendor/sdk/include/speech.h`.
 
-Also supply the **SAPI4 SDK headers/libs** (to compile the bridge) where the
-Dockerfile's `$SAPI4_SDK` expects them. (Sources are listed in legal-and-assets.md;
-TETYYS/SAPI4 documents a working Wine install of exactly these.)
+`speech.h` stays user-supplied because it's Microsoft-copyrighted ("All rights reserved")
+with no redistribution grant, so we never ship it (see ADR-0027 / ADR-0006). The build
+**fails loudly** with the exact drop path if it's missing.
 
-## 2. Build dist, then the image
+That's the only host setup. **Docker is the only host tool** — no Node, no pnpm, no manual
+`dist` build. The image compiles the server's `dist/` itself in a `node:20-slim` build stage
+(`pnpm install` + `tsc --build`).
+
+## 2. Build the image
+The build context is the **repo root** (the build reads the pnpm workspace). From the repo root,
+either let compose do it:
 ```
-pnpm --filter @vivify/voice-server typecheck   # emits dist/ (server is pure Node built-ins at runtime)
-docker build -t vivify-voice services/voice-server
+docker compose up        # compose sets the context (.) and dockerfile
+```
+or build by hand:
+```
+docker build -f services/voice-server/Dockerfile -t vivify-voice .
 ```
 
 ## 3. Run
@@ -30,6 +41,7 @@ docker build -t vivify-voice services/voice-server
 docker run --rm -p 8080:8080 vivify-voice
 curl localhost:8080/health        # -> {"ok":true}
 ```
+This needs an image built with the three `vendor/` files above (they're baked in at build time).
 
 ## 4. GO/NO-GO test
 ```
@@ -173,6 +185,8 @@ evict the oldest entries by mtime on write.
 `[cache] N entries, M on disk`.
 
 ## Local dev without Wine
-The HTTP layer can be exercised against a fake bridge:
+The HTTP layer can be exercised against a fake bridge. Build `dist/` once on the host
+(`pnpm --filter @vivify/voice-server run build`), then:
 `VIVIFY_SAPI4_BRIDGE="node test/fake-bridge.mjs" node dist/main.js` — returns a canned
 WAV + timeline so you can hit `/tts` without the engine. (This proves plumbing, NOT the voice.)
+This host build is only for local dev; the Docker image builds its own `dist/` in-image.
