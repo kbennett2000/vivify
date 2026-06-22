@@ -16,9 +16,9 @@ plain-English **["What is this?"](docs/what-is-this.md)**.
 
 ## ▶ See it move
 
-There's no hosted click-to-try demo yet _(coming soon)_. But you can run the playground on your own
-machine in about a minute — see **[Try it in 60 seconds](#-try-it-in-60-seconds)** below. It's a little
-sandbox where you load a character, click its animations, and type to make it talk.
+There's no hosted click-to-try demo yet — but you can run the playground on your own machine in about a
+minute — see **[Try it in 60 seconds](#-try-it-in-60-seconds)** below. It's a little sandbox where you
+load a character, click its animations, and type to make it talk.
 
 ![Genie moving and talking in the MASH playground, rendered entirely in the browser](assets/gifs/genie-speaking.gif)
 
@@ -159,9 +159,11 @@ authentic voice is a clearly-labeled upgrade.
 - **`services/voice-server`** — the Dockerized voice helper.
 - **`apps/mash`** — the playground demo you ran above.
 
-Full developer docs are on the way: [`docs/developers/overview.md`](docs/developers/overview.md) and a
-copy-paste [`docs/developers/quickstart.md`](docs/developers/quickstart.md) _(coming soon)_. The
-architecture is documented today in [`docs/architecture.md`](docs/architecture.md), and the build plan in
+Full developer docs are here: the **[overview](docs/developers/overview.md)** (the openness pitch +
+architecture), a copy-paste **[quickstart](docs/developers/quickstart.md)** (a talking character in about
+ten lines), the **[API reference](docs/developers/api.md)**, **[TTS providers](docs/developers/providers.md)**,
+and **[character bundles](docs/developers/bundles.md)**. The architecture is also written up in
+[`docs/architecture.md`](docs/architecture.md), and the full build history in
 [`docs/roadmap.md`](docs/roadmap.md).
 
 ---
