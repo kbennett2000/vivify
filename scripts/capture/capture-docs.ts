@@ -121,14 +121,27 @@ function ensureDirs(out: string): { shots: string; gifs: string } {
   return { shots, gifs };
 }
 
-// Capture a sequence of element screenshots over ~durationMs. Element screenshots
-// aren't frame-accurate (each call has overhead), but the result clearly shows
-// motion, which is all the docs need.
-async function captureFrames(target: Locator, frames: number, gapMs: number): Promise<Buffer[]> {
+interface Clip {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+// Capture a sequence of frames over time. Uses a page-level clip (a tight box
+// around the character) when given, else the element. Screenshots aren't
+// frame-accurate (each call has overhead), but the result clearly shows motion.
+async function captureFrames(
+  page: Page,
+  clip: Clip | undefined,
+  fallback: Locator,
+  frames: number,
+  gapMs: number,
+): Promise<Buffer[]> {
   const buffers: Buffer[] = [];
   for (let i = 0; i < frames; i++) {
-    buffers.push(await target.screenshot());
-    if (i < frames - 1) await target.page().waitForTimeout(gapMs);
+    buffers.push(clip ? await page.screenshot({ clip }) : await fallback.screenshot());
+    if (i < frames - 1) await page.waitForTimeout(gapMs);
   }
   return buffers;
 }
@@ -212,21 +225,49 @@ async function main(): Promise<void> {
     const window = page.locator('.window');
     const stage = page.locator('#stage');
 
-    // Stills: the whole app, and the character alone.
-    await capturePng(window, join(shots, `${opts.name}-app.png`));
-    await capturePng(stage, join(shots, `${opts.name}-portrait.png`));
-
-    // GIF: a representative animation playing.
+    // Play a representative animation first. The character only paints once an
+    // action runs (right after load the stage is still empty), and this leaves it
+    // holding a lively end pose for the stills.
     const anim = await pickAnimation(page, opts.animation);
+    let animName = 'animation';
     if (anim) {
-      const animName = (await anim.textContent())?.trim() ?? 'animation';
-      log(`playing "${animName}" for the animation GIF`);
+      animName = (await anim.textContent())?.trim() ?? 'animation';
+      log(`playing "${animName}" to bring the character on stage`);
       await anim.click();
-      const frames = await captureFrames(stage, 30, 90);
-      encodeGif(frames, join(gifs, `${opts.name}-animation.gif`), { delayMs: 90, maxWidth: 480 });
-      log(`wrote ${join(gifs, `${opts.name}-animation.gif`)}`);
+      await page.waitForTimeout(1600); // let it play through and hold its end pose
     } else {
-      warn('no animations to capture — skipping the animation GIF');
+      warn('no animations found — the character may not be visible in the stills');
+    }
+
+    // The character sits at the stage's left edge in a wide, mostly-empty stage.
+    // Clip a tight box around it so the portrait and GIFs frame the character
+    // (and the small mouth movement is actually visible) instead of empty space.
+    const sb = await stage.boundingBox();
+    const clip: Clip | undefined = sb
+      ? {
+          x: Math.round(sb.x),
+          y: Math.round(sb.y),
+          width: Math.round(Math.min(220, sb.width)),
+          height: Math.round(Math.min(220, sb.height)),
+        }
+      : undefined;
+
+    // Stills: the whole app (character on stage + animation grid), and a tight portrait.
+    await capturePng(window, join(shots, `${opts.name}-app.png`));
+    if (clip) {
+      await page.screenshot({ path: join(shots, `${opts.name}-portrait.png`), clip });
+      log(`wrote ${join(shots, `${opts.name}-portrait.png`)}`);
+    } else {
+      await capturePng(stage, join(shots, `${opts.name}-portrait.png`));
+    }
+
+    // GIF: replay the same animation and capture it playing.
+    if (anim) {
+      log(`replaying "${animName}" for the animation GIF`);
+      await anim.click();
+      const frames = await captureFrames(page, clip, stage, 30, 90);
+      encodeGif(frames, join(gifs, `${opts.name}-animation.gif`), { delayMs: 90, maxWidth: 320 });
+      log(`wrote ${join(gifs, `${opts.name}-animation.gif`)}`);
     }
 
     // Talking + lip-sync: needs the voice container at #voiceUrl (pre-filled to :8080).
@@ -239,16 +280,26 @@ async function main(): Promise<void> {
         .catch(() => undefined);
       await page.locator('#speak').fill(opts.speak);
       log('clicking Speak — needs the voice container for authentic audio + lip-sync');
+      // The engine logs a lip-sync tick the instant audio starts (and the balloon
+      // shows). Wait for that so we capture the actual mouth movement, not the
+      // synthesis wait — robust whether the phrase is cached (instant) or fresh (~3-4s).
+      const audioStarted = page
+        .waitForEvent('console', {
+          predicate: (m) => m.text().includes('[vivify:lipsync] t='),
+          timeout: 20_000,
+        })
+        .then(() => true)
+        .catch(() => false);
       await page.locator('#speakBtn').click();
-      await page.waitForTimeout(500); // let synthesis start and the balloon open
+      const started = await audioStarted;
       const status = (await page.locator('#status').textContent())?.trim() ?? '';
-      if (/couldn't reach|failed/i.test(status)) {
+      if (!started || /couldn't reach|failed/i.test(status)) {
         warn(
-          `speech did not start: "${status}". The mouth may not move. Is the voice container up?`,
+          `speech may not have started (status: "${status}"). The mouth may not move — is the voice container up?`,
         );
       }
-      const frames = await captureFrames(stage, 36, 80);
-      encodeGif(frames, join(gifs, `${opts.name}-speaking.gif`), { delayMs: 80, maxWidth: 480 });
+      const frames = await captureFrames(page, clip, stage, 40, 90);
+      encodeGif(frames, join(gifs, `${opts.name}-speaking.gif`), { delayMs: 90, maxWidth: 320 });
       log(`wrote ${join(gifs, `${opts.name}-speaking.gif`)}`);
       // A still from the middle of the utterance (balloon up, mouth mid-move).
       const mid = frames[Math.floor(frames.length / 2)];
