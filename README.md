@@ -9,6 +9,9 @@
 
 > _Before "Agent" had anything to do with AI… there were Genie, Merlin, and Clippy._
 
+📖 **New here, or just curious?** Browse the **[documentation](docs/README.md)** — start with the
+plain-English **["What is this?"](docs/what-is-this.md)**.
+
 ---
 
 ## ▶ See it move
@@ -40,11 +43,14 @@ computer to just _look_ at it.
 > 💾 **Remember when…** software came on a stack of floppy disks, "downloading" meant going to make a
 > sandwich, and a tiny cartoon would pop up to "help" you write a letter? Yeah. This brings _that_ back.
 
+👉 **Want the full story?** Read **[What is this?](docs/what-is-this.md)** — Microsoft Agent explained from
+scratch, zero knowledge assumed.
+
 #### A couple of words, in plain English
 
 - **`.acs` file** — the single file that holds one character: all its pictures, animations, and sounds.
-  (Microsoft's format. You supply your own — more on that below.) _A full glossary is coming in
-  [`docs/glossary.md`](docs/glossary.md)._
+  (Microsoft's format. You supply your own — more on that below.) _See the
+  **[glossary](docs/glossary.md)** for every term in plain English._
 - **Lip-sync** — the character's mouth moving in time with the words it speaks.
 
 ---
@@ -183,7 +189,6 @@ It's all explained, with exactly where to get each piece, in
 - 🛠️ **Troubleshooting** — common hiccups, per platform → [`docs/troubleshooting.md`](docs/troubleshooting.md)
   _(coming soon)_
 - 📖 **Glossary** — every technical term, in plain English → [`docs/glossary.md`](docs/glossary.md)
-  _(coming soon)_
 
 ---
 
@@ -193,7 +198,7 @@ vivify stands on a lot of shoulders, gratefully: the original **Microsoft Agent*
 characters; **DoubleAgent** (Cinnamon Software) and **Lebeau's MSAgent Decompiler** as references for the
 `.acs` format; **clippy.js** for proving the characters could live again in a browser; **TETYYS/SAPI4** for
 charting the path to the authentic voice; and **TMAFE** for keeping the character archive alive all these
-years. A fuller credits page is coming in [`docs/credits.md`](docs/credits.md).
+years. See the full **[credits page](docs/credits.md)**.
 
 ---
 
