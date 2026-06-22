@@ -3,7 +3,7 @@
 The engine is MIT. It ships **no** Microsoft or Lernout & Hauspie IP and **no** character files. To get the authentic experience you supply three categories of original components yourself. None of these are committed to the repo (see `.gitignore`).
 
 ## 1. Character files (`.acs`) — you bring your own
-- **Your source `https://tmafe.com/packs` and `https://tmafe.com/classic-ms-agents/` is the right one.** TMAFE (The Microsoft Agent Fan ... community) is the de-facto archive and is fine to use. No need to look elsewhere.
+- **Your source `https://tmafe.com/packs` and `https://tmafe.com/classic-ms-agents/` is the right one.** TMAFE is the de-facto community archive and is fine to use. No need to look elsewhere.
 - Grab the **original four** as canonical test fixtures: **Genie, Merlin, Peedy, Robby**. Genie is the Cycle 1 primary fixture.
 - For format-coverage variety later, also pull a couple of oddballs (an Office assistant like Clippy/Rover, and any community character with lots of animations).
 - These are Microsoft's copyrighted works. Use them at your discretion; we don't redistribute them. Store them locally under a gitignored `fixtures/raw/` path.
