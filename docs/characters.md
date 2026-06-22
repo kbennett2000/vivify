@@ -7,6 +7,10 @@ any other character anyone ever made. If it's a `.acs` file, vivify aims to run 
 
 _The gallery grows as characters are captured. Here's Genie — load any `.acs` to meet the rest._
 
+![Genie performing his Greet animation in the browser](../assets/gifs/genie-animation.gif)
+
+_…and in motion — Genie's "Greet", played straight from his original animation set._
+
 ## How to get your own `.acs` files
 
 vivify ships **no** character files — they're Microsoft's, and you supply your own. The
